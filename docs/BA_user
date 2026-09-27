@@ -1,1 +1,49 @@
+Use Case 1: Đặt thuê xe dành cho Khách vãng lai (Guest Booking)
+Mô tả: Khách hàng chưa có tài khoản thực hiện chọn ngày giờ, chọn xe và điền form để gửi yêu cầu thuê.
 
+Tiền điều kiện: Khách truy cập vào trang chủ của nền tảng.
+
+Luồng sự kiện chính:
+
+Khách hàng chọn "Ngày nhận xe" và "Ngày trả xe" (bao gồm cả giờ).
+
+Hệ thống kiểm tra dữ liệu và hiển thị danh sách các xe máy đang ở trạng thái "Trống" trong khoảng thời gian đó.
+
+Khách hàng xem thông tin chi tiết và chọn 1 xe muốn thuê.
+
+Hệ thống hiển thị Form Phiếu Yêu Cầu Thuê Xe (trống).
+
+Khách hàng nhập các thông tin bắt buộc (VD: Họ tên, Số điện thoại, CCCD/Passport, Email, Ghi chú...).
+
+Khách hàng ấn nút "Xác nhận thuê xe".
+
+Hệ thống lưu yêu cầu thuê xe ở trạng thái "Chờ xử lý" và gửi thông báo tới cho Staff.
+
+Staff kiểm tra hệ thống, chấp nhận yêu cầu và tiến hành gọi điện trực tiếp vào số điện thoại của khách để xác nhận chốt xe, đồng thời trao đổi các thủ tục liên quan (đặt cọc, giấy tờ cần mang theo).
+
+Kết quả: Tạo thành công một phiếu yêu cầu thuê xe chờ Staff xử lý qua điện thoại.
+
+Use Case 2: Đặt thuê xe dành cho Khách đã đăng ký (Registered Customer Booking)
+Mô tả: Khách hàng đã có tài khoản thực hiện thuê xe với trải nghiệm liền mạch, tự động điền thông tin và theo dõi trạng thái online.
+
+Tiền điều kiện: Khách hàng đã đăng nhập thành công vào tài khoản.
+
+Luồng sự kiện chính:
+
+Khách hàng chọn "Ngày/giờ nhận" và "Ngày/giờ trả".
+
+Hệ thống hiển thị danh sách các xe khả dụng.
+
+Khách hàng chọn 1 xe muốn thuê.
+
+Hệ thống hiển thị Form Phiếu Yêu Cầu Thuê Xe, tự động lấy thông tin từ Database (Họ tên, SĐT, CCCD...) điền sẵn vào các trường tương ứng. Khách có thể sửa nếu muốn đổi SĐT liên hệ.
+
+Khách hàng ấn nút "Xác nhận thuê xe".
+
+Hệ thống lưu yêu cầu thuê xe, cập nhật trực tiếp vào mục "Quản lý phiếu thuê / Lịch sử thuê" của khách hàng với trạng thái "Chờ xác nhận".
+
+Staff tiếp nhận yêu cầu trên hệ thống và bấm "Chấp nhận".
+
+Hệ thống tự động chuyển trạng thái phiếu thuê thành "Đã xác nhận" (hoặc "Thành công") trên giao diện của khách hàng. Khách hàng tự theo dõi được mà không cần Staff phải gọi điện.
+
+Kết quả: Phiếu thuê được tạo và khách hàng có thể chủ động theo dõi vòng đời của phiếu thuê ngay trên web.
