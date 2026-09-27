@@ -1,1 +1,12 @@
+1. Admin đăng nhập => trang quản trị
+  gồm 2 chức năng chính : Quản lí giao diện trang chủ và Quản lý tài khoản
+
+2. Quản lí giao diện trang chủ
+  Admin chọn phần nội dung cần chỉnh sửa, ví dụ banner/slide, giới thiệu, chính sách, hotline, địa chỉ
+
+3. Quản lí tài khoản
+  Admin có thể xem danh sách tài khoản nhân viên kinh doanh, staff, customer (thêm chức năng lọc tìm kiếm theo tên)
+  - Nhân viên kinh doanh : cấp tài khoản, xóa, xem, bổ nhiệm, bãi nhiệm
+  - Staff: cấp, xóa, xem, bổ nhiệm, bãi nhiệm
+  - Customer: xem thông tin trạng thái, khóa, mở khóa
 
