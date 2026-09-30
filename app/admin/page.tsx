@@ -11,6 +11,7 @@ import {
   onSnapshot,
   serverTimestamp,
   updateDoc,
+  setDoc,
 } from "firebase/firestore";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { auth, db } from "../../lib/firebase";
@@ -18,62 +19,25 @@ import { auth, db } from "../../lib/firebase";
 type AdminUser = { fullName: string; email: string };
 type View =
   | "overview"
-  | "vehicles"
-  | "pricing"
-  | "locations"
-  | "bookings"
   | "customers"
   | "staff"
   | "content"
-  | "settings";
-type Vehicle = {
-  id: string;
-  name: string;
-  type: string;
-  licensePlate: string;
-  dailyPrice: number;
-  description: string;
-  specs: string;
-  image: string;
-  amenities: string[];
-  status: string;
-  isVisible: boolean;
-  totalQuantity: number;
-};
-type LocationItem = {
-  id: string;
-  name: string;
-  address: string;
-  phone: string;
-  isActive: boolean;
-};
-type PriceItem = {
-  id: string;
-  name: string;
-  oneToFive: number;
-  sixToTen: number;
-  elevenToTwenty: number;
-  overTwenty: number;
-};
+;
 type CustomerItem = {
   id: string;
   fullName: string;
   email: string;
   phone: string;
   verificationStatus: string;
-  staffProposal: string;
+  isBlocked: boolean;
+  role: string;
 };
 
 const menu: { id: View; label: string; icon: string; group?: string }[] = [
   { id: "overview", label: "Tổng quan", icon: "▦" },
-  { id: "vehicles", label: "Quản lý xe", icon: "◈", group: "Vận hành" },
-  { id: "pricing", label: "Bảng giá", icon: "₫" },
-  { id: "locations", label: "Địa điểm nhận xe", icon: "⌖" },
-  { id: "bookings", label: "Đơn thuê", icon: "▤", group: "Hệ thống" },
-  { id: "customers", label: "Khách hàng", icon: "♙" },
+  { id: "customers", label: "Khách hàng", icon: "♙", group: "Quản lý tài khoản" },
   { id: "staff", label: "Nhân viên", icon: "♧" },
   { id: "content", label: "Nội dung trang chủ", icon: "✦", group: "Cấu hình" },
-  { id: "settings", label: "Cài đặt", icon: "⚙" },
 ];
 
 const titles: Record<
@@ -85,33 +49,13 @@ const titles: Record<
     title: "Tổng quan",
     description: "Theo dõi dữ liệu vận hành của Vi Vu Bike.",
   },
-  vehicles: {
-    eyebrow: "DANH MỤC",
-    title: "Quản lý xe",
-    description: "Tạo và cập nhật xe hiển thị trên trang chủ.",
-  },
-  pricing: {
-    eyebrow: "DANH MỤC",
-    title: "Bảng giá",
-    description: "Thiết lập mức giá theo loại xe và thời gian thuê.",
-  },
-  locations: {
-    eyebrow: "DANH MỤC",
-    title: "Địa điểm nhận xe",
-    description: "Quản lý các cơ sở cho khách chọn khi tìm xe.",
-  },
-  bookings: {
-    eyebrow: "VẬN HÀNH",
-    title: "Đơn thuê",
-    description: "Theo dõi toàn bộ yêu cầu thuê xe trong hệ thống.",
-  },
   customers: {
-    eyebrow: "NGƯỜI DÙNG",
+    eyebrow: "QUẢN LÝ TÀI KHOẢN",
     title: "Khách hàng",
     description: "Xem hồ sơ và lịch sử thuê xe của khách hàng.",
   },
   staff: {
-    eyebrow: "NGƯỜI DÙNG",
+    eyebrow: "QUẢN LÝ TÀI KHOẢN",
     title: "Nhân viên",
     description: "Tạo và quản lý tài khoản nhân viên vận hành.",
   },
@@ -119,11 +63,6 @@ const titles: Record<
     eyebrow: "CẤU HÌNH",
     title: "Nội dung trang chủ",
     description: "Chỉnh sửa ảnh động, thông tin giới thiệu và liên hệ.",
-  },
-  settings: {
-    eyebrow: "CẤU HÌNH",
-    title: "Cài đặt",
-    description: "Thiết lập chung cho hệ thống thuê xe.",
   },
 };
 
@@ -161,7 +100,6 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   const [notice, setNotice] = useState("");
-  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
@@ -189,31 +127,6 @@ export default function AdminPage() {
     return unsubscribe;
   }, [router]);
 
-  useEffect(() => {
-    return onSnapshot(collection(db, "vehicles"), (snapshot) => {
-      setVehicles(
-        snapshot.docs.map((item) => {
-          const data = item.data();
-          return {
-            id: item.id,
-            name: String(data.name || "Xe chưa đặt tên"),
-            type: String(data.type || "Khác"),
-            licensePlate: String(data.licensePlate || "—"),
-            dailyPrice: Number(data.dailyPrice || 0),
-            description: String(data.description || ""),
-            specs: String(data.specs || ""),
-            image: String(data.image || ""),
-            amenities: Array.isArray(data.amenities)
-              ? data.amenities.map(String)
-              : [],
-            status: String(data.status || "available"),
-            isVisible: Boolean(data.isVisible),
-            totalQuantity: Math.max(1, Number(data.totalQuantity || 1)),
-          };
-        }),
-      );
-    });
-  }, []);
 
   const initials = useMemo(
     () =>
@@ -246,14 +159,14 @@ export default function AdminPage() {
   return (
     <main className="admin-shell">
       {notice && <div className="toast">✓ {notice}</div>}
-      <aside className={menuOpen ? "sidebar open" : "sidebar"}>
-        <a className="brand" href="/">
+      <aside className={menuOpen ? "sidebar open px-4 py-6" : "sidebar px-4 py-6"}>
+        <a className="brand px-3" href="/">
           <span className="brand-mark">V</span>
           <span>
             VI VU <b>BIKE</b>
           </span>
         </a>
-        <div className="admin-profile">
+        <div className="admin-profile px-3">
           <span className="avatar">{initials}</span>
           <div>
             <b>{admin.fullName}</b>
@@ -263,11 +176,11 @@ export default function AdminPage() {
         <a className="home-link" href="/">
           ⌂ <span>Trang chủ</span>
         </a>
-        <nav>
+        <nav className="space-y-1">
           {menu.map((item, index) => (
             <div key={item.id}>
               {item.group && (
-                <p className={index === 1 ? "menu-group first" : "menu-group"}>
+                <p className="menu-group mt-6 mb-2">
                   {item.group}
                 </p>
               )}
@@ -306,22 +219,10 @@ export default function AdminPage() {
           </div>
         </header>
         <div className="page-body">
-          {view === "overview" && (
-            <Overview
-              onChangeView={changeView}
-              vehicleCount={vehicles.length}
-            />
-          )}
-          {view === "vehicles" && (
-            <Vehicles notify={notify} vehicles={vehicles} />
-          )}
-          {view === "pricing" && <Pricing notify={notify} />}
-          {view === "locations" && <Locations notify={notify} />}
-          {view === "bookings" && <Bookings />}
-          {view === "customers" && <Customers />}
+          {view === "overview" && <Overview onChangeView={changeView} />}
+          {view === "customers" && <Customers notify={notify} />}
           {view === "staff" && <Staff notify={notify} />}
           {view === "content" && <Content notify={notify} />}
-          {view === "settings" && <Settings notify={notify} />}
         </div>
       </section>
 
@@ -449,9 +350,6 @@ export default function AdminPage() {
           font-weight: 800;
           letter-spacing: 0.09em;
           text-transform: uppercase;
-        }
-        .menu-group.first {
-          margin-top: 0;
         }
         .menu-item span,
         .home-link {
@@ -982,58 +880,12 @@ export default function AdminPage() {
 
 function Overview({
   onChangeView,
-  vehicleCount,
 }: {
   onChangeView: (view: View) => void;
-  vehicleCount: number;
 }) {
   return (
     <>
-      <p className="page-lead">
-        Các số liệu sẽ tự cập nhật khi Admin thêm xe và khi Customer phát sinh
-        đơn thuê thực tế.
-      </p>
-      <section className="metric-grid">
-        <article className="metric">
-          <span>◈</span>
-          <p>Xe đang hoạt động</p>
-          <b>{vehicleCount}</b>
-          <small>
-            {vehicleCount ? "Xe đã được khai báo" : "Chưa có xe được khai báo"}
-          </small>
-        </article>
-        <article className="metric">
-          <span>▣</span>
-          <p>Xe đang được thuê</p>
-          <b>0</b>
-          <small>Chưa có đơn thuê đang diễn ra</small>
-        </article>
-        <article className="metric">
-          <span>▤</span>
-          <p>Đơn thuê mới hôm nay</p>
-          <b>0</b>
-          <small>Chưa có đơn thuê mới</small>
-        </article>
-        <article className="metric">
-          <span>₫</span>
-          <p>Doanh thu tháng này</p>
-          <b>0đ</b>
-          <small>Chưa phát sinh đơn hoàn thành</small>
-        </article>
-      </section>
       <section className="section-grid">
-        <div className="panel">
-          <div className="panel-header">
-            <h2>Đơn thuê mới nhất</h2>
-            <button onClick={() => onChangeView("bookings")}>
-              Xem đơn thuê →
-            </button>
-          </div>
-          <EmptyState
-            title="Chưa có đơn thuê nào"
-            text="Đơn thuê sẽ xuất hiện ở đây khi khách đã gửi yêu cầu thuê xe."
-          />
-        </div>
         <div className="panel admin-review">
           <span className="review-label">KIỂM DUYỆT CUỐI</span>
           <h3>Hồ sơ Staff đã đề xuất: 0</h3>
@@ -1051,670 +903,20 @@ function Overview({
           </div>
         </div>
       </section>
-      <section className="section-grid">
-        <div className="panel">
-          <div className="panel-header">
-            <h2>Tình trạng đội xe</h2>
-            <button onClick={() => onChangeView("vehicles")}>
-              Quản lý xe →
-            </button>
-          </div>
-          <EmptyState
-            title="Chưa có dữ liệu xe"
-            text="Hãy thêm xe đầu tiên để hệ thống có thể theo dõi tình trạng hoạt động."
-            action="Thêm xe"
-          />
-        </div>
-        <div className="panel">
-          <div className="panel-header">
-            <h2>Địa điểm nhận xe</h2>
-            <button onClick={() => onChangeView("locations")}>Quản lý →</button>
-          </div>
-          <EmptyState
-            title="Chưa có địa điểm"
-            text="Thêm cơ sở để khách có thể lựa chọn nơi nhận xe."
-          />
-        </div>
-      </section>
     </>
   );
 }
 
-function Vehicles({
-  notify,
-  vehicles,
-}: {
-  notify: (message: string) => void;
-  vehicles: Vehicle[];
-}) {
-  const [formOpen, setFormOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [editing, setEditing] = useState<Vehicle | null>(null);
-  const [rentedByVehicle, setRentedByVehicle] = useState<
-    Record<string, number>
-  >({});
-  useEffect(
-    () =>
-      onSnapshot(collection(db, "bookings"), (snapshot) => {
-        const counts: Record<string, number> = {};
-        snapshot.docs.forEach((item) => {
-          const data = item.data();
-          if (
-            ["Đã xác nhận", "Đang thuê"].includes(String(data.status || ""))
-          ) {
-            const vehicleId = String(data.vehicleId || "");
-            if (vehicleId) counts[vehicleId] = (counts[vehicleId] || 0) + 1;
-          }
-        });
-        setRentedByVehicle(counts);
-      }),
-    [],
-  );
-  const toggleVisible = async (vehicle: Vehicle) => {
-    try {
-      await updateDoc(doc(db, "vehicles", vehicle.id), {
-        isVisible: !vehicle.isVisible,
-      });
-      notify(
-        vehicle.isVisible
-          ? "Đã ẩn xe khỏi trang chủ."
-          : "Đã cho xe hiển thị ở trang chủ.",
-      );
-    } catch {
-      notify("Không thể cập nhật trạng thái xe.");
-    }
-  };
-  const changeStatus = async (vehicle: Vehicle, status: string) => {
-    try {
-      await updateDoc(doc(db, "vehicles", vehicle.id), { status });
-      notify("Đã cập nhật trạng thái xe.");
-    } catch {
-      notify("Không thể cập nhật trạng thái xe.");
-    }
-  };
-  const remove = async (vehicle: Vehicle) => {
-    if (!window.confirm(`Xóa xe ${vehicle.name}?`)) return;
-    try {
-      await deleteDoc(doc(db, "vehicles", vehicle.id));
-      notify("Đã xóa xe.");
-    } catch {
-      notify("Không thể xóa xe.");
-    }
-  };
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    setSaving(true);
-    try {
-      const values = {
-        name: String(form.get("name") || "").trim(),
-        type: String(form.get("type") || ""),
-        licensePlate: String(form.get("licensePlate") || "").trim(),
-        dailyPrice: Number(form.get("dailyPrice") || 0),
-        totalQuantity: Math.max(1, Number(form.get("totalQuantity") || 1)),
-        specs: String(form.get("specs") || "").trim(),
-        image: String(form.get("image") || "").trim(),
-        description: String(form.get("description") || "").trim(),
-        amenities: String(form.get("amenities") || "")
-          .split(",")
-          .map((item) => item.trim())
-          .filter(Boolean),
-        status: editing?.status || "available",
-        isVisible: editing?.isVisible ?? true,
-      };
-      if (editing) await updateDoc(doc(db, "vehicles", editing.id), values);
-      else
-        await addDoc(collection(db, "vehicles"), {
-          ...values,
-          createdAt: serverTimestamp(),
-        });
-      setFormOpen(false);
-      setEditing(null);
-      notify(
-        editing
-          ? "Đã cập nhật thông tin xe."
-          : "Đã thêm xe. Trang chủ sẽ tự cập nhật danh sách xe.",
-      );
-    } catch {
-      notify(
-        "Không thể lưu xe. Hãy kiểm tra lại Firestore Rules và quyền Admin.",
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <>
-      <div className="view-head">
-        <div>
-          <h2>Danh sách xe</h2>
-          <p>Xe được thêm tại đây sẽ là nguồn dữ liệu cho trang chủ.</p>
-        </div>
-        <button
-          className="button"
-          onClick={() => {
-            setEditing(null);
-            setFormOpen(!formOpen);
-          }}
-        >
-          {formOpen ? "Đóng biểu mẫu" : "+ Thêm xe"}
-        </button>
-      </div>
-      {formOpen && (
-        <form className="panel form-card" onSubmit={submit}>
-          <h3>{editing ? "Chỉnh sửa xe" : "Thông tin xe mới"}</h3>
-          <div className="form-grid">
-            <label className="field">
-              <span>Tên xe</span>
-              <input
-                name="name"
-                required
-                defaultValue={editing?.name || ""}
-                placeholder="Ví dụ: Honda Vision 110cc"
-              />
-            </label>
-            <label className="field">
-              <span>Loại xe</span>
-              <select name="type" required defaultValue={editing?.type || ""}>
-                <option value="" disabled>
-                  Chọn loại xe
-                </option>
-                <option>Tay ga</option>
-                <option>Xe số</option>
-                <option>Côn tay</option>
-              </select>
-            </label>
-            <label className="field">
-              <span>Biển số xe</span>
-              <input
-                name="licensePlate"
-                required
-                defaultValue={editing?.licensePlate || ""}
-                placeholder="29A1-123.45"
-              />
-            </label>
-            <label className="field">
-              <span>Giá thuê/ngày</span>
-              <input
-                name="dailyPrice"
-                required
-                type="number"
-                min="0"
-                defaultValue={editing?.dailyPrice || ""}
-                placeholder="180000"
-              />
-            </label>
-            <label className="field">
-              <span>Tổng số xe cùng mẫu</span>
-              <input
-                name="totalQuantity"
-                required
-                type="number"
-                min="1"
-                defaultValue={editing?.totalQuantity || 1}
-                placeholder="Ví dụ: 5"
-              />
-            </label>
-            <label className="field">
-              <span>Thông số xe</span>
-              <input
-                name="specs"
-                required
-                defaultValue={editing?.specs || ""}
-                placeholder="110cc · Tự động"
-              />
-            </label>
-            <label className="field">
-              <span>Ảnh xe (đường dẫn ảnh)</span>
-              <input
-                name="image"
-                required
-                type="url"
-                defaultValue={editing?.image || ""}
-                placeholder="https://..."
-              />
-            </label>
-            <label className="field full">
-              <span>Tiện ích (ngăn cách bằng dấu phẩy)</span>
-              <input
-                name="amenities"
-                defaultValue={
-                  editing?.amenities.join(", ") || "02 mũ bảo hiểm, 01 áo mưa"
-                }
-              />
-            </label>
-            <label className="field full">
-              <span>Mô tả ngắn</span>
-              <textarea
-                name="description"
-                required
-                defaultValue={editing?.description || ""}
-                placeholder="Mô tả tình trạng và điểm phù hợp của xe."
-              />
-            </label>
-          </div>
-          <div className="form-actions">
-            <button
-              type="button"
-              className="button secondary"
-              onClick={() => {
-                setFormOpen(false);
-                setEditing(null);
-              }}
-            >
-              Hủy
-            </button>
-            <button className="button" disabled={saving}>
-              {saving ? "Đang lưu…" : editing ? "Lưu thay đổi" : "Lưu xe"}
-            </button>
-          </div>
-        </form>
-      )}
-      {!formOpen &&
-        (vehicles.length ? (
-          <section className="panel table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Tên xe</th>
-                  <th>Loại xe</th>
-                  <th>Tổng</th>
-                  <th>Đang thuê</th>
-                  <th>Còn trống</th>
-                  <th>Giá/ngày</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {vehicles.map((vehicle) => {
-                  const rented = rentedByVehicle[vehicle.id] || 0;
-                  const available = Math.max(0, vehicle.totalQuantity - rented);
-                  return (
-                    <tr key={vehicle.id}>
-                      <td>
-                        <b>{vehicle.name}</b>
-                        <br />
-                        <small>{vehicle.licensePlate}</small>
-                      </td>
-                      <td>{vehicle.type}</td>
-                      <td>{vehicle.totalQuantity} chiếc</td>
-                      <td>{rented} chiếc</td>
-                      <td>
-                        <b>{available} chiếc</b>
-                      </td>
-                      <td>
-                        {new Intl.NumberFormat("vi-VN").format(
-                          vehicle.dailyPrice,
-                        )}
-                        đ
-                      </td>
-                      <td>
-                        <button
-                          className="link-button"
-                          onClick={() => {
-                            setEditing(vehicle);
-                            setFormOpen(true);
-                          }}
-                        >
-                          Sửa
-                        </button>{" "}
-                        <button
-                          className="danger-button"
-                          onClick={() => remove(vehicle)}
-                        >
-                          Xóa
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </section>
-        ) : (
-          <EmptyState
-            title="Chưa có xe để hiển thị"
-            text="Thêm xe đầu tiên, sau đó xe sẽ hiện tại đây và ở trang chủ."
-            action="+ Thêm xe"
-            onAction={() => setFormOpen(true)}
-          />
-        ))}
-    </>
-  );
-}
-
-function Pricing({ notify }: { notify: (message: string) => void }) {
-  const [items, setItems] = useState<PriceItem[]>([]);
-  const [open, setOpen] = useState(false);
-  useEffect(
-    () =>
-      onSnapshot(collection(db, "pricing"), (snapshot) =>
-        setItems(
-          snapshot.docs.map((item) => ({
-            id: item.id,
-            name: String(item.data().name || ""),
-            oneToFive: Number(item.data().oneToFive || 0),
-            sixToTen: Number(item.data().sixToTen || 0),
-            elevenToTwenty: Number(item.data().elevenToTwenty || 0),
-            overTwenty: Number(item.data().overTwenty || 0),
-          })),
-        ),
-      ),
-    [],
-  );
-  const save = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    try {
-      await addDoc(collection(db, "pricing"), {
-        name: String(form.get("name")),
-        oneToFive: Number(form.get("oneToFive")),
-        sixToTen: Number(form.get("sixToTen")),
-        elevenToTwenty: Number(form.get("elevenToTwenty")),
-        overTwenty: Number(form.get("overTwenty")),
-        createdAt: serverTimestamp(),
-      });
-      setOpen(false);
-      notify("Đã thêm mức giá.");
-    } catch {
-      notify("Không thể lưu bảng giá.");
-    }
-  };
-  const remove = async (id: string) => {
-    if (!window.confirm("Xóa mức giá này?")) return;
-    await deleteDoc(doc(db, "pricing", id));
-    notify("Đã xóa mức giá.");
-  };
-  return (
-    <>
-      <div className="view-head">
-        <div>
-          <h2>Thiết lập bảng giá</h2>
-          <p>Giá được dùng để hiển thị tham khảo trên trang chủ.</p>
-        </div>
-        <button className="button" onClick={() => setOpen(!open)}>
-          {open ? "Đóng biểu mẫu" : "+ Thêm mức giá"}
-        </button>
-      </div>
-      {open && (
-        <form className="panel form-card" onSubmit={save}>
-          <h3>Mức giá theo thời gian thuê</h3>
-          <div className="form-grid">
-            <label className="field full">
-              <span>Tên loại xe</span>
-              <input name="name" required placeholder="Ví dụ: Tay ga 110cc" />
-            </label>
-            <label className="field">
-              <span>1–5 ngày</span>
-              <input name="oneToFive" type="number" required min="0" />
-            </label>
-            <label className="field">
-              <span>6–10 ngày</span>
-              <input name="sixToTen" type="number" required min="0" />
-            </label>
-            <label className="field">
-              <span>11–20 ngày</span>
-              <input name="elevenToTwenty" type="number" required min="0" />
-            </label>
-            <label className="field">
-              <span>Từ 21 ngày</span>
-              <input name="overTwenty" type="number" required min="0" />
-            </label>
-          </div>
-          <div className="form-actions">
-            <button
-              type="button"
-              className="button secondary"
-              onClick={() => setOpen(false)}
-            >
-              Hủy
-            </button>
-            <button className="button">Lưu mức giá</button>
-          </div>
-        </form>
-      )}
-      {!open &&
-        (items.length ? (
-          <section className="panel table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Loại xe</th>
-                  <th>1–5 ngày</th>
-                  <th>6–10 ngày</th>
-                  <th>11–20 ngày</th>
-                  <th>Từ 21 ngày</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((item) => (
-                  <tr key={item.id}>
-                    <td>
-                      <b>{item.name}</b>
-                    </td>
-                    <td>{item.oneToFive.toLocaleString("vi-VN")}đ</td>
-                    <td>{item.sixToTen.toLocaleString("vi-VN")}đ</td>
-                    <td>{item.elevenToTwenty.toLocaleString("vi-VN")}đ</td>
-                    <td>{item.overTwenty.toLocaleString("vi-VN")}đ</td>
-                    <td>
-                      <button
-                        className="danger-button"
-                        onClick={() => remove(item.id)}
-                      >
-                        Xóa
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        ) : (
-          <EmptyState
-            title="Chưa có bảng giá"
-            text="Tạo mức giá theo loại xe và số ngày thuê để hiển thị cho khách hàng."
-            action="+ Thêm mức giá"
-            onAction={() => setOpen(true)}
-          />
-        ))}
-    </>
-  );
-}
-function Locations({ notify }: { notify: (message: string) => void }) {
-  const [items, setItems] = useState<LocationItem[]>([]);
-  const [open, setOpen] = useState(false);
-  useEffect(
-    () =>
-      onSnapshot(collection(db, "locations"), (snapshot) =>
-        setItems(
-          snapshot.docs.map((item) => ({
-            id: item.id,
-            name: String(item.data().name || ""),
-            address: String(item.data().address || ""),
-            phone: String(item.data().phone || ""),
-            isActive: Boolean(item.data().isActive),
-          })),
-        ),
-      ),
-    [],
-  );
-  const save = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    try {
-      await addDoc(collection(db, "locations"), {
-        name: String(form.get("name")),
-        address: String(form.get("address")),
-        phone: String(form.get("phone")),
-        isActive: true,
-        createdAt: serverTimestamp(),
-      });
-      setOpen(false);
-      notify("Đã thêm địa điểm nhận xe.");
-    } catch {
-      notify("Không thể lưu địa điểm.");
-    }
-  };
-  const toggle = async (item: LocationItem) => {
-    await updateDoc(doc(db, "locations", item.id), {
-      isActive: !item.isActive,
-    });
-    notify("Đã cập nhật trạng thái địa điểm.");
-  };
-  const remove = async (id: string) => {
-    if (!window.confirm("Xóa địa điểm này?")) return;
-    await deleteDoc(doc(db, "locations", id));
-    notify("Đã xóa địa điểm.");
-  };
-  return (
-    <>
-      <div className="view-head">
-        <div>
-          <h2>Các cơ sở nhận xe</h2>
-          <p>Khách hàng sẽ chọn một trong các địa điểm đang hoạt động.</p>
-        </div>
-        <button className="button" onClick={() => setOpen(!open)}>
-          {open ? "Đóng biểu mẫu" : "+ Thêm địa điểm"}
-        </button>
-      </div>
-      {open && (
-        <form className="panel form-card" onSubmit={save}>
-          <h3>Địa điểm mới</h3>
-          <label className="field">
-            <span>Tên cơ sở</span>
-            <input name="name" required placeholder="Ví dụ: Cơ sở Ba Đình" />
-          </label>
-          <label className="field">
-            <span>Địa chỉ</span>
-            <input name="address" required placeholder="Ba Đình, Hà Nội" />
-          </label>
-          <label className="field">
-            <span>Số điện thoại</span>
-            <input name="phone" required placeholder="0900 123 456" />
-          </label>
-          <div className="form-actions">
-            <button
-              type="button"
-              className="button secondary"
-              onClick={() => setOpen(false)}
-            >
-              Hủy
-            </button>
-            <button className="button">Lưu địa điểm</button>
-          </div>
-        </form>
-      )}
-      {!open &&
-        (items.length ? (
-          <section className="panel table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Tên cơ sở</th>
-                  <th>Địa chỉ</th>
-                  <th>Điện thoại</th>
-                  <th>Trạng thái</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((item) => (
-                  <tr key={item.id}>
-                    <td>
-                      <b>{item.name}</b>
-                    </td>
-                    <td>{item.address}</td>
-                    <td>{item.phone}</td>
-                    <td>
-                      <button
-                        className="link-button"
-                        onClick={() => toggle(item)}
-                      >
-                        {item.isActive ? "Đang hoạt động" : "Tạm ngừng"}
-                      </button>
-                    </td>
-                    <td>
-                      <button
-                        className="danger-button"
-                        onClick={() => remove(item.id)}
-                      >
-                        Xóa
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </section>
-        ) : (
-          <EmptyState
-            title="Chưa có địa điểm nhận xe"
-            text="Thêm ít nhất một cơ sở trước khi bật chức năng tìm xe cho khách."
-            action="+ Thêm địa điểm"
-            onAction={() => setOpen(true)}
-          />
-        ))}
-    </>
-  );
-}
-function Bookings() {
-  return (
-    <>
-      <div className="view-head">
-        <div>
-          <h2>Toàn bộ đơn thuê</h2>
-          <p>Mỗi đơn là một yêu cầu thuê xe do khách hàng gửi.</p>
-        </div>
-        <div className="toolbar">
-          <input placeholder="Tìm mã đơn hoặc tên khách" />
-          <select className="filter-select">
-            <option>Tất cả trạng thái</option>
-            <option>Chờ xác nhận</option>
-            <option>Đã xác nhận</option>
-            <option>Đang thuê</option>
-            <option>Đã hoàn thành</option>
-            <option>Đã hủy</option>
-          </select>
-        </div>
-      </div>
-      <section className="panel table-wrap">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Mã đơn</th>
-              <th>Khách hàng</th>
-              <th>Xe</th>
-              <th>Thời gian thuê</th>
-              <th>Staff phụ trách</th>
-              <th>Trạng thái</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td colSpan={6}>
-                <div className="empty-state">
-                  <span className="empty-icon">▤</span>
-                  <div>
-                    <h3>Chưa có đơn thuê nào</h3>
-                    <p>
-                      Khi Customer gửi yêu cầu thuê xe, đơn sẽ xuất hiện trong
-                      danh sách này.
-                    </p>
-                  </div>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-    </>
-  );
-}
-function Customers() {
+function Customers({ notify }: { notify: (message: string) => void }) {
   const [customers, setCustomers] = useState<CustomerItem[]>([]);
   const [keyword, setKeyword] = useState("");
   const [loadError, setLoadError] = useState("");
+  
+  // Modals state
+  const [blockingUser, setBlockingUser] = useState<CustomerItem | null>(null);
+  const [roleUser, setRoleUser] = useState<CustomerItem | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+
   useEffect(() => {
     return onSnapshot(
       collection(db, "users"),
@@ -1731,7 +933,7 @@ function Customers() {
             verificationStatus: String(
               data.verificationStatus || "not_submitted",
             ),
-            staffProposal: String(data.staffProposal || "Chưa có"),
+            isBlocked: Boolean(data.isBlocked),
           };
         });
         setCustomers(items.filter((item) => item.role === "customer"));
@@ -1742,6 +944,7 @@ function Customers() {
         ),
     );
   }, []);
+
   const label = (value: string) =>
     ({
       not_submitted: "Chưa gửi hồ sơ",
@@ -1750,11 +953,46 @@ function Customers() {
       approved: "Đã xác minh",
       rejected: "Bị từ chối",
     })[value] || value;
+
   const visible = customers.filter((item) =>
-    `${item.fullName} ${item.email}`
+    (item.fullName + " " + item.email)
       .toLowerCase()
       .includes(keyword.toLowerCase()),
   );
+
+  const handleToggleBlock = async () => {
+    if (!blockingUser) return;
+    setIsProcessing(true);
+    try {
+      await updateDoc(doc(db, "users", blockingUser.id), {
+        isBlocked: !blockingUser.isBlocked,
+      });
+      notify(blockingUser.isBlocked ? "Đã mở khóa tài khoản." : "Đã khóa tài khoản.");
+      setBlockingUser(null);
+    } catch (err) {
+      notify("Lỗi khi thay đổi trạng thái tài khoản.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleRoleChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!roleUser) return;
+    setIsProcessing(true);
+    try {
+      await updateDoc(doc(db, "users", roleUser.id), {
+        role: roleUser.role,
+      });
+      notify("Đổi vai trò thành công.");
+      setRoleUser(null);
+    } catch (err) {
+      notify("Lỗi khi cập nhật vai trò.");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   return (
     <>
       <div className="view-head">
@@ -1787,7 +1025,7 @@ function Customers() {
               <th>Email</th>
               <th>Số điện thoại</th>
               <th>Trạng thái hồ sơ</th>
-              <th>Đề xuất Staff</th>
+              <th style={{ textAlign: "right" }}>Thao tác</th>
             </tr>
           </thead>
           <tbody>
@@ -1804,7 +1042,22 @@ function Customers() {
                       {label(item.verificationStatus)}
                     </span>
                   </td>
-                  <td>{item.staffProposal}</td>
+                  <td style={{ textAlign: "right" }}>
+                    <button
+                      className="link-button"
+                      style={{ marginRight: 10, color: "#4f46e5", fontWeight: 500 }}
+                      onClick={() => setRoleUser(item)}
+                    >
+                      Đổi vai trò
+                    </button>
+                    <button
+                      className="link-button"
+                      style={{ color: item.isBlocked ? "#059669" : "#dc2626", fontWeight: 500 }}
+                      onClick={() => setBlockingUser(item)}
+                    >
+                      {item.isBlocked ? "Mở khóa" : "Khóa"}
+                    </button>
+                  </td>
                 </tr>
               ))
             ) : (
@@ -1831,14 +1084,98 @@ function Customers() {
           </tbody>
         </table>
       </section>
+
+      {blockingUser && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card">
+            <h3>{blockingUser.isBlocked ? "Mở khóa tài khoản" : "Khóa tài khoản"}</h3>
+            <p className="page-lead" style={{ margin: "10px 0 20px" }}>
+              Bạn có chắc chắn muốn {blockingUser.isBlocked ? "mở khóa" : "khóa"} tài khoản <b>{blockingUser.fullName}</b> không?
+            </p>
+            <div className="form-actions">
+              <button
+                className="button secondary"
+                onClick={() => setBlockingUser(null)}
+                disabled={isProcessing}
+              >
+                Hủy
+              </button>
+              <button
+                className="button"
+                style={{ background: blockingUser.isBlocked ? "#059669" : "#c73a22", color: "#fff" }}
+                onClick={handleToggleBlock}
+                disabled={isProcessing}
+              >
+                {isProcessing ? "Đang xử lý..." : blockingUser.isBlocked ? "Mở khóa" : "Khóa tài khoản"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {roleUser && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card">
+            <h3 style={{ marginBottom: "5px" }}>Thay đổi vai trò người dùng</h3>
+            <p style={{ margin: "0 0 15px", color: "#6d7780", fontSize: "14px", lineHeight: 1.5 }}>
+              Khách hàng: <b>{roleUser.fullName}</b><br/>
+              Email: {roleUser.email}<br/>
+            </p>
+            <form onSubmit={handleRoleChange}>
+              <div className="form-grid">
+                <label className="field full">
+                  <span>Chọn vai trò mới</span>
+                  <select
+                    value={roleUser.role}
+                    onChange={(e) =>
+                      setRoleUser({ ...roleUser, role: e.target.value })
+                    }
+                  >
+                    <option value="customer">Khách hàng (customer)</option>
+                    <option value="staff">Nhân viên vận hành (staff)</option>
+                    <option value="admin">Quản trị viên (admin)</option>
+                  </select>
+                </label>
+              </div>
+              <div className="form-actions" style={{ marginTop: 20 }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setRoleUser(null)}
+                  disabled={isProcessing}
+                >
+                  Hủy
+                </button>
+                <button type="submit" className="button" style={{ background: "#4f46e5", color: "#fff" }} disabled={isProcessing}>
+                  {isProcessing ? "Đang xử lý..." : "Cập nhật vai trò"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </>
   );
 }
 function Staff({ notify }: { notify: (message: string) => void }) {
   const [items, setItems] = useState<
-    { id: string; fullName: string; email: string; phone: string }[]
+    { id: string; fullName: string; email: string; phone: string; role: string; isBlocked: boolean }[]
   >([]);
+  const [keyword, setKeyword] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [editingStaff, setEditingStaff] = useState<{ id: string; fullName: string; phone: string } | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [deletingStaff, setDeletingStaff] = useState<{ id: string; fullName: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [roleStaff, setRoleStaff] = useState<{ id: string; fullName: string; email: string; role: string } | null>(null);
+  const [isChangingRole, setIsChangingRole] = useState(false);
+
+  const [isCreating, setIsCreating] = useState(false);
+  const [createForm, setCreateForm] = useState({ fullName: "", email: "", phone: "", password: "", role: "staff" });
+  const [showPassword, setShowPassword] = useState(false);
+  const [createError, setCreateError] = useState("");
+
+  
 
   useEffect(() => {
     return onSnapshot(
@@ -1855,6 +1192,7 @@ function Staff({ notify }: { notify: (message: string) => void }) {
                 fullName: String(data.fullName || "Chưa cập nhật tên"),
                 email: String(data.email || ""),
                 phone: String(data.phone || "Chưa cập nhật"),
+                isBlocked: Boolean(data.isBlocked),
               };
             })
             .filter((item) => item.role === "staff"),
@@ -1867,26 +1205,103 @@ function Staff({ notify }: { notify: (message: string) => void }) {
     );
   }, []);
 
+  const visible = items.filter((item) =>
+    (item.fullName + " " + item.email)
+      .toLowerCase()
+      .includes(keyword.toLowerCase()),
+  );
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingStaff) return;
+    setIsSaving(true);
+    try {
+      await updateDoc(doc(db, "users", editingStaff.id), {
+        fullName: editingStaff.fullName,
+        phone: editingStaff.phone,
+      });
+      notify("Cập nhật thông tin nhân viên thành công.");
+      setEditingStaff(null);
+    } catch (err) {
+      notify("Lỗi khi cập nhật thông tin.");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deletingStaff) return;
+    setIsDeleting(true);
+    try {
+      await deleteDoc(doc(db, "users", deletingStaff.id));
+      notify("Đã xóa nhân viên.");
+      setDeletingStaff(null);
+    } catch (err) {
+      notify("Lỗi khi xóa nhân viên.");
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleRoleChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!roleStaff) return;
+    setIsChangingRole(true);
+    try {
+      await updateDoc(doc(db, "users", roleStaff.id), {
+        role: roleStaff.role,
+      });
+      notify("Đổi vai trò thành công.");
+      setRoleStaff(null);
+    } catch (err) {
+      notify("Lỗi khi cập nhật vai trò.");
+    } finally {
+      setIsChangingRole(false);
+    }
+  };
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCreateError("");
+    setIsSaving(true);
+    try {
+      const res = await fetch("/api/admin/create-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(createForm),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Có lỗi xảy ra");
+      }
+      notify("Cấp tài khoản thành công!");
+      setIsCreating(false);
+      setCreateForm({ fullName: "", email: "", phone: "", password: "", role: "staff" });
+    } catch (err: any) {
+      setCreateError(err.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+
+
   return (
     <>
       <div className="view-head">
         <div>
           <h2>Nhân viên vận hành</h2>
-          <p>
-            Danh sách lấy trực tiếp từ các tài khoản có trường{" "}
-            <b>role: "staff"</b> trong Firestore.
-          </p>
         </div>
-        <button
-          className="button"
-          onClick={() =>
-            notify(
-              "Tạo Staff: đăng ký tài khoản trong Authentication, sau đó đặt role là staff trong Firestore.",
-            )
-          }
-        >
-          Hướng dẫn tạo Staff
-        </button>
+        <div className="toolbar" style={{ display: "flex", gap: "10px" }}>
+          <input
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            placeholder="Tìm tên hoặc email"
+          />
+          <button className="button" style={{ background: "#f86522", color: "white", padding: "0 16px" }} onClick={() => setIsCreating(true)}>
+            + Cấp tài khoản
+          </button>
+        </div>
       </div>
       {loadError && (
         <section className="panel empty-state">
@@ -1897,45 +1312,341 @@ function Staff({ notify }: { notify: (message: string) => void }) {
           </div>
         </section>
       )}
-      {items.length ? (
-        <section className="panel table-wrap">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Nhân viên</th>
-                <th>Email</th>
-                <th>Số điện thoại</th>
-                <th>UID</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
+      <section className="panel table-wrap">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Nhân viên</th>
+              <th>Email</th>
+              <th>Số điện thoại</th>
+              <th style={{ textAlign: "right" }}>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visible.length ? (
+              visible.map((item) => (
                 <tr key={item.id}>
                   <td>
                     <b>{item.fullName}</b>
                   </td>
                   <td>{item.email || "Chưa cập nhật"}</td>
                   <td>{item.phone}</td>
-                  <td>
-                    <code>{item.id}</code>
+                  <td style={{ textAlign: "right" }}>
+                    <button
+                      className="link-button"
+                      style={{ marginRight: 10, color: "#4f46e5", fontWeight: 500 }}
+                      onClick={() => setRoleStaff(item as any)}
+                    >
+                      Đổi vai trò
+                    </button>
+                    <button
+                      className="link-button"
+                      style={{ marginRight: 10, color: "#2b78e4" }}
+                      onClick={() => setEditingStaff(item)}
+                    >
+                      Sửa
+                    </button>
+                    <button
+                      className="danger-button"
+                      onClick={() => setDeletingStaff(item)}
+                    >
+                      Xóa
+                    </button>
                   </td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : (
-        !loadError && (
-          <EmptyState
-            title="Chưa có nhân viên"
-            text="Chưa tìm thấy document users nào có role là staff. Kiểm tra lại UID và trường role trong Firestore."
-          />
-        )
+              ))
+            ) : (
+              !loadError && (
+                <tr>
+                  <td colSpan={4}>
+                    <div className="empty-state">
+                      <span className="empty-icon">♧</span>
+                      <div>
+                        <h3>
+                          {items.length
+                            ? "Không tìm thấy nhân viên"
+                            : "Chưa có nhân viên"}
+                        </h3>
+                        <p>
+                          {items.length
+                            ? "Thử lại với tên hoặc email khác."
+                            : "Chưa tìm thấy document users nào có role là staff. Kiểm tra lại role trong Firestore."}
+                        </p>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )
+            )}
+          </tbody>
+        </table>
+      </section>
+
+      {editingStaff && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card">
+            <h3>Sửa thông tin nhân viên</h3>
+            <form onSubmit={handleSave}>
+              <div className="form-grid">
+                <label className="field full">
+                  <span>Họ và tên</span>
+                  <input
+                    required
+                    value={editingStaff.fullName}
+                    onChange={(e) =>
+                      setEditingStaff({ ...editingStaff, fullName: e.target.value })
+                    }
+                  />
+                </label>
+                <label className="field full">
+                  <span>Số điện thoại</span>
+                  <input
+                    required
+                    value={editingStaff.phone}
+                    onChange={(e) =>
+                      setEditingStaff({ ...editingStaff, phone: e.target.value })
+                    }
+                  />
+                </label>
+              </div>
+              <div className="form-actions" style={{ marginTop: 20 }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setEditingStaff(null)}
+                  disabled={isSaving}
+                >
+                  Hủy
+                </button>
+                <button type="submit" className="button" disabled={isSaving}>
+                  {isSaving ? "Đang lưu..." : "Lưu thay đổi"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isCreating && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card" style={{ maxWidth: 500 }}>
+            <h3>Cấp tài khoản nhân viên mới</h3>
+            {createError && <div style={{ color: "red", marginBottom: 10 }}>{createError}</div>}
+            <form onSubmit={handleCreate}>
+              <div className="form-grid">
+                <label className="field full">
+                  <span>Họ và tên *</span>
+                  <input
+                    required
+                    placeholder="Ví dụ: Nguyễn Văn A"
+                    value={createForm.fullName}
+                    onChange={(e) => setCreateForm({ ...createForm, fullName: e.target.value })}
+                  />
+                </label>
+                <label className="field full">
+                  <span>Email *</span>
+                  <input
+                    required
+                    type="email"
+                    placeholder="Ví dụ: nhanvien@vivubike.com"
+                    value={createForm.email}
+                    onChange={(e) => setCreateForm({ ...createForm, email: e.target.value })}
+                  />
+                </label>
+                <label className="field full">
+                  <span>Số điện thoại *</span>
+                  <input
+                    required
+                    type="tel"
+                    placeholder="Ví dụ: 0912345678"
+                    pattern="[0-9]{9,11}"
+                    title="Số điện thoại phải từ 9-11 chữ số"
+                    value={createForm.phone}
+                    onChange={(e) => setCreateForm({ ...createForm, phone: e.target.value })}
+                  />
+                </label>
+                <label className="field full">
+                  <span>Mật khẩu khởi tạo *</span>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <input
+                      required
+                      type={showPassword ? "text" : "password"}
+                      minLength={6}
+                      placeholder="Ít nhất 6 ký tự"
+                      value={createForm.password}
+                      onChange={(e) => setCreateForm({ ...createForm, password: e.target.value })}
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      type="button"
+                      className="button secondary"
+                      onClick={() => setShowPassword(!showPassword)}
+                    >
+                      {showPassword ? "Ẩn" : "Hiện"}
+                    </button>
+                  </div>
+                </label>
+                <label className="field full">
+                  <span>Vai trò *</span>
+                  <select
+                    className="input"
+                    value={createForm.role}
+                    onChange={(e) => setCreateForm({ ...createForm, role: e.target.value })}
+                  >
+                    <option value="staff">Nhân viên vận hành (staff)</option>
+                  </select>
+                </label>
+              </div>
+              <div className="form-actions" style={{ marginTop: 20 }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setIsCreating(false)}
+                  disabled={isSaving}
+                >
+                  Hủy
+                </button>
+                <button type="submit" className="button" disabled={isSaving}>
+                  {isSaving ? "Đang tạo..." : "Tạo tài khoản"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+
+      {deletingStaff && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card">
+            <h3>Xóa nhân viên</h3>
+            <p className="page-lead" style={{ margin: "10px 0 20px" }}>
+              Bạn có chắc chắn muốn xóa nhân viên <b>{deletingStaff.fullName}</b> không? Hành động này không thể hoàn tác.
+            </p>
+            <div className="form-actions">
+              <button
+                className="button secondary"
+                onClick={() => setDeletingStaff(null)}
+                disabled={isDeleting}
+              >
+                Hủy
+              </button>
+              <button
+                className="button"
+                style={{ background: "#c73a22", color: "#fff" }}
+                onClick={handleDelete}
+                disabled={isDeleting}
+              >
+                {isDeleting ? "Đang xóa..." : "Xóa nhân viên"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {roleStaff && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card">
+            <h3 style={{ marginBottom: "5px" }}>Thay đổi vai trò người dùng</h3>
+            <p style={{ margin: "0 0 15px", color: "#6d7780", fontSize: "14px", lineHeight: 1.5 }}>
+              Nhân viên: <b>{roleStaff.fullName}</b><br/>
+              Email: {roleStaff.email}<br/>
+            </p>
+            <form onSubmit={handleRoleChange}>
+              <div className="form-grid">
+                <label className="field full">
+                  <span>Chọn vai trò mới</span>
+                  <select
+                    value={roleStaff.role}
+                    onChange={(e) =>
+                      setRoleStaff({ ...roleStaff, role: e.target.value })
+                    }
+                  >
+                    <option value="customer">Khách hàng (customer)</option>
+                    <option value="staff">Nhân viên vận hành (staff)</option>
+                    <option value="admin">Quản trị viên (admin)</option>
+                  </select>
+                </label>
+              </div>
+              <div className="form-actions" style={{ marginTop: 20 }}>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setRoleStaff(null)}
+                  disabled={isChangingRole}
+                >
+                  Hủy
+                </button>
+                <button type="submit" className="button" style={{ background: "#4f46e5", color: "#fff" }} disabled={isChangingRole}>
+                  {isChangingRole ? "Đang xử lý..." : "Cập nhật vai trò"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </>
   );
 }
 function Content({ notify }: { notify: (message: string) => void }) {
+  const [modalType, setModalType] = useState<"slides" | "about" | "contact" | null>(null);
+  const [loadingData, setLoadingData] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const [slides, setSlides] = useState<any[]>([]);
+  const [about, setAbout] = useState({ introText: "", fullDescription: "", policies: [] as string[] });
+  const [contact, setContact] = useState({ hotline: "", email: "", address: "", workingHours: "", socialLinks: { facebook: "", zalo: "" } });
+
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const docSnap = await getDoc(doc(db, "site_settings", "homepage"));
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          if (data.slides) setSlides(data.slides);
+          if (data.about) {
+            setAbout({
+              introText: data.about.introText || "",
+              fullDescription: data.about.fullDescription || "",
+              policies: data.about.policies || []
+            });
+          }
+          if (data.contact) {
+            setContact({
+              hotline: data.contact.hotline || "",
+              email: data.contact.email || "",
+              address: data.contact.address || "",
+              workingHours: data.contact.workingHours || "",
+              socialLinks: data.contact.socialLinks || { facebook: "", zalo: "" }
+            });
+          }
+        }
+      } catch (err) {
+        notify("Lỗi tải dữ liệu trang chủ.");
+      } finally {
+        setLoadingData(false);
+      }
+    }
+    loadData();
+  }, [notify]);
+
+  const handleSave = async (section: "slides" | "about" | "contact", data: any) => {
+    setSaving(true);
+    try {
+      await setDoc(doc(db, "site_settings", "homepage"), {
+        [section]: data
+      }, { merge: true });
+      notify("Đã lưu nội dung thành công!");
+      setModalType(null);
+    } catch (err) {
+      notify("Có lỗi khi lưu dữ liệu.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loadingData) return <div className="p-8 text-center text-gray-500">Đang tải cấu hình...</div>;
+
   return (
     <>
       <div className="view-head">
@@ -1949,79 +1660,130 @@ function Content({ notify }: { notify: (message: string) => void }) {
         <ul className="info-list">
           <li>
             <span>Ảnh và nội dung slide đầu trang</span>
-            <button
-              className="link-button"
-              onClick={() =>
-                notify(
-                  "Phần chỉnh sửa slide sẽ được nối với Firestore ở bước dữ liệu.",
-                )
-              }
-            >
-              Chỉnh sửa
-            </button>
+            <button className="link-button" onClick={() => setModalType("slides")}>Chỉnh sửa</button>
           </li>
           <li>
             <span>Giới thiệu và chính sách hỗ trợ</span>
-            <button
-              className="link-button"
-              onClick={() =>
-                notify(
-                  "Phần nội dung sẽ được nối với Firestore ở bước dữ liệu.",
-                )
-              }
-            >
-              Chỉnh sửa
-            </button>
+            <button className="link-button" onClick={() => setModalType("about")}>Chỉnh sửa</button>
           </li>
           <li>
             <span>Thông tin liên hệ, hotline, địa chỉ</span>
-            <button
-              className="link-button"
-              onClick={() =>
-                notify("Phần liên hệ sẽ được nối với Firestore ở bước dữ liệu.")
-              }
-            >
-              Chỉnh sửa
-            </button>
+            <button className="link-button" onClick={() => setModalType("contact")}>Chỉnh sửa</button>
           </li>
         </ul>
       </section>
-    </>
-  );
-}
-function Settings({ notify }: { notify: (message: string) => void }) {
-  return (
-    <>
-      <div className="view-head">
-        <div>
-          <h2>Cài đặt hệ thống</h2>
-          <p>Các thiết lập dùng chung cho Vi Vu Bike.</p>
+
+      {/* MODAL: SLIDES */}
+      {modalType === "slides" && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card" style={{ maxWidth: 800 }}>
+            <h3>Chỉnh sửa Slide</h3>
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+              {slides.map((s, i) => (
+                <div key={s.id || i} className="p-4 border border-gray-200 rounded-md space-y-3 relative">
+                  <button type="button" className="absolute top-2 right-2 text-red-500" onClick={() => setSlides(slides.filter((_, idx) => idx !== i))}>Xóa</button>
+                  <div>
+                    <label>Tiêu đề (Title)</label>
+                    <input className="input" value={s.title || ""} onChange={(e) => { const newS = [...slides]; newS[i].title = e.target.value; setSlides(newS); }} />
+                  </div>
+                  <div>
+                    <label>Mô tả (Subtitle)</label>
+                    <input className="input" value={s.subtitle || ""} onChange={(e) => { const newS = [...slides]; newS[i].subtitle = e.target.value; setSlides(newS); }} />
+                  </div>
+                  <div>
+                    <label>URL Ảnh</label>
+                    <input className="input" value={s.imageUrl || ""} onChange={(e) => { const newS = [...slides]; newS[i].imageUrl = e.target.value; setSlides(newS); }} />
+                  </div>
+                  <div>
+                    <label>Đường dẫn nút (Link CTA)</label>
+                    <input className="input" value={s.link || ""} onChange={(e) => { const newS = [...slides]; newS[i].link = e.target.value; setSlides(newS); }} />
+                  </div>
+                </div>
+              ))}
+              <button type="button" className="button outline" onClick={() => setSlides([...slides, { id: Date.now().toString(), title: "", subtitle: "", imageUrl: "", link: "" }])}>+ Thêm Slide</button>
+            </div>
+            <div className="form-actions mt-6">
+              <button className="button secondary" onClick={() => setModalType(null)} disabled={saving}>Hủy</button>
+              <button className="button primary" onClick={() => handleSave("slides", slides)} disabled={saving}>{saving ? "Đang lưu..." : "Lưu thay đổi"}</button>
+            </div>
+          </div>
         </div>
-      </div>
-      <section className="panel form-card">
-        <h3>Kiểm duyệt hồ sơ</h3>
-        <label className="field">
-          <span>Quy tắc xử lý</span>
-          <select defaultValue="">
-            <option value="">Staff kiểm tra, Admin duyệt cuối</option>
-            <option>Staff kiểm tra, Admin kiểm tra ngẫu nhiên</option>
-          </select>
-        </label>
-        <p className="page-lead">
-          Dù sử dụng quy tắc nào, Staff vẫn là người xử lý giấy tờ trực tiếp.
-          Admin có quyền can thiệp và xem lại toàn bộ hồ sơ.
-        </p>
-        <button
-          className="button"
-          onClick={() =>
-            notify(
-              "Đã lưu giao diện cài đặt. Bước tiếp theo sẽ lưu cấu hình vào Firestore.",
-            )
-          }
-        >
-          Lưu cài đặt
-        </button>
-      </section>
+      )}
+
+      {/* MODAL: ABOUT & POLICIES */}
+      {modalType === "about" && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card" style={{ maxWidth: 800 }}>
+            <h3>Giới thiệu & Chính sách hỗ trợ</h3>
+            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+              <div>
+                <label>Văn bản giới thiệu (Intro)</label>
+                <textarea className="input" rows={3} value={about.introText} onChange={(e) => setAbout({ ...about, introText: e.target.value })} />
+              </div>
+              <div>
+                <label>Mô tả đầy đủ (Description)</label>
+                <textarea className="input" rows={5} value={about.fullDescription} onChange={(e) => setAbout({ ...about, fullDescription: e.target.value })} />
+              </div>
+              <div>
+                <label className="font-bold block mb-2">Chính sách / Cam kết</label>
+                {about.policies.map((p, i) => (
+                  <div key={i} className="flex gap-2 mb-2">
+                    <input className="input flex-1" value={p} onChange={(e) => { const newP = [...about.policies]; newP[i] = e.target.value; setAbout({ ...about, policies: newP }); }} />
+                    <button type="button" className="button secondary text-red-500" onClick={() => setAbout({ ...about, policies: about.policies.filter((_, idx) => idx !== i) })}>X</button>
+                  </div>
+                ))}
+                <button type="button" className="button outline text-sm mt-2" onClick={() => setAbout({ ...about, policies: [...about.policies, ""] })}>+ Thêm chính sách</button>
+              </div>
+            </div>
+            <div className="form-actions mt-6">
+              <button className="button secondary" onClick={() => setModalType(null)} disabled={saving}>Hủy</button>
+              <button className="button primary" onClick={() => handleSave("about", about)} disabled={saving}>{saving ? "Đang lưu..." : "Lưu thay đổi"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CONTACT */}
+      {modalType === "contact" && (
+        <div className="modal-overlay">
+          <div className="modal-content panel form-card" style={{ maxWidth: 600 }}>
+            <h3>Thông tin liên hệ</h3>
+            <div className="space-y-4">
+              <div>
+                <label>Hotline</label>
+                <input className="input" value={contact.hotline} onChange={(e) => setContact({ ...contact, hotline: e.target.value })} />
+              </div>
+              <div>
+                <label>Email</label>
+                <input className="input" type="email" value={contact.email} onChange={(e) => setContact({ ...contact, email: e.target.value })} />
+              </div>
+              <div>
+                <label>Địa chỉ</label>
+                <input className="input" value={contact.address} onChange={(e) => setContact({ ...contact, address: e.target.value })} />
+              </div>
+              <div>
+                <label>Thời gian làm việc</label>
+                <input className="input" value={contact.workingHours} onChange={(e) => setContact({ ...contact, workingHours: e.target.value })} />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label>Link Facebook</label>
+                  <input className="input" value={contact.socialLinks.facebook} onChange={(e) => setContact({ ...contact, socialLinks: { ...contact.socialLinks, facebook: e.target.value } })} />
+                </div>
+                <div>
+                  <label>Link Zalo</label>
+                  <input className="input" value={contact.socialLinks.zalo} onChange={(e) => setContact({ ...contact, socialLinks: { ...contact.socialLinks, zalo: e.target.value } })} />
+                </div>
+              </div>
+            </div>
+            <div className="form-actions mt-6">
+              <button className="button secondary" onClick={() => setModalType(null)} disabled={saving}>Hủy</button>
+              <button className="button primary" onClick={() => handleSave("contact", contact)} disabled={saving}>{saving ? "Đang lưu..." : "Lưu thay đổi"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
+

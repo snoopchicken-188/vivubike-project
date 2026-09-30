@@ -31,6 +31,12 @@ export default function HomePage() {
   const [rates, setRates] = useState<Rate[]>([]);
 
   useEffect(() => {
+    if (typeof window !== "undefined" && window.location.search.includes("login=true")) {
+      setAuthMode("login");
+    }
+  }, []);
+
+  useEffect(() => {
     if (paused) return;
     const id = window.setInterval(() => setSlide((current) => (current + 1) % slides.length), 5500);
     return () => window.clearInterval(id);
@@ -111,6 +117,14 @@ export default function HomePage() {
       setAuthMode(null);
       if (role === "customer") {
         setAccount({ fullName: String(profile.data()?.fullName || credential.user.displayName || "Khách hàng"), role });
+        
+        const returnTo = localStorage.getItem("returnTo");
+        if (returnTo) {
+          localStorage.removeItem("returnTo");
+          router.push(returnTo);
+          return;
+        }
+
         notify("Đăng nhập thành công. Chào mừng bạn quay lại Vi Vu Bike!");
         return;
       }
@@ -179,7 +193,7 @@ export default function HomePage() {
         <button className="menu-button" onClick={() => setMenuOpen(!menuOpen)} aria-label="Mở menu">{menuOpen ? "✕" : "☰"}</button>
         <nav className={menuOpen ? "nav nav-open" : "nav"}>
           <a href="#gioi-thieu" onClick={() => setMenuOpen(false)}>Giới thiệu</a><a href="#xe" onClick={() => setMenuOpen(false)}>Xe cho thuê</a><a href="#bang-gia" onClick={() => setMenuOpen(false)}>Bảng giá</a><a href="#danh-gia" onClick={() => setMenuOpen(false)}>Đánh giá</a><a href="#lien-he" onClick={() => setMenuOpen(false)}>Liên hệ</a>
-          {account ? <div className="account-nav"><a href={account.role === "customer" ? "/customer" : `/${account.role}`}>Tài khoản: {account.fullName}</a><button className="logout-button" onClick={handleSignOut}>Đăng xuất</button></div> : <button className="login" onClick={() => { setAuthMode("login"); setMenuOpen(false); }}>Đăng nhập</button>}
+          {account ? <div className="account-nav"><a href={account.role === "customer" ? "/customer" : account.role === "admin" ? "/admin" : "/staff"}>Tài khoản: {account.fullName}</a><button className="logout-button" onClick={handleSignOut}>Đăng xuất</button></div> : <button className="login" onClick={() => { setAuthMode("login"); setMenuOpen(false); }}>Đăng nhập</button>}
         </nav>
       </header>
 
@@ -187,15 +201,15 @@ export default function HomePage() {
         <div className="hero-media" key={slide} style={{ backgroundImage: `url(${activeSlide.image})` }} />
         <div className="hero-overlay" />
         <div className="hero-content" key={`content-${slide}`}><p className="eyebrow">{activeSlide.eyebrow}</p><h1>{activeSlide.title}<br /><em>{activeSlide.accent}</em></h1><p>{activeSlide.text}</p><div className="hero-tags"><span>✓ Xe bảo dưỡng định kỳ</span><span>✓ Hỗ trợ 24/7</span></div></div>
-        <form className="search-card" onSubmit={handleSearch}><h2><span>⌖</span> Tìm xe trống</h2><label>Điểm nhận xe<select required defaultValue=""><option value="" disabled>{locations.length ? "Chọn địa điểm" : "Chưa có địa điểm"}</option>{locations.map((location) => <option key={location}>{location}</option>)}</select></label><div className="search-grid"><label>Ngày nhận<input type="date" required defaultValue="2026-09-12" /></label><label>Ngày trả<input type="date" required defaultValue="2026-09-14" /></label></div><button className="primary-button">Tìm xe ngay <span>→</span></button></form>
+        <form className="search-card" onSubmit={handleSearch}><h2><span>⌖</span> Tìm xe trống</h2><label>Loại xe<select required value={filter} onChange={(e) => setFilter(e.target.value)}>{["Tất cả xe", "Tay ga", "Xe số", "Côn tay"].map((type) => <option key={type} value={type}>{type}</option>)}</select></label><div className="search-grid"><label>Ngày nhận<input type="date" required defaultValue="2026-09-12" /></label><label>Ngày trả<input type="date" required defaultValue="2026-09-14" /></label></div><button className="primary-button">Tìm xe ngay <span>→</span></button></form>
         <div className="hero-controls"><button onClick={() => setSlide((slide + slides.length - 1) % slides.length)} aria-label="Ảnh trước">←</button><div>{slides.map((_, index) => <button key={index} onClick={() => setSlide(index)} className={index === slide ? "dot active" : "dot"} aria-label={`Ảnh ${index + 1}`} />)}</div><button onClick={() => setPaused(!paused)} aria-label="Tạm dừng ảnh">{paused ? "▶" : "Ⅱ"}</button><button onClick={() => setSlide((slide + 1) % slides.length)} aria-label="Ảnh tiếp">→</button></div>
       </section>
 
       <section className="section intro" id="gioi-thieu"><div><p className="eyebrow orange">GIỚI THIỆU</p><h2>Thuê xe chủ động cho mọi chuyến đi.</h2></div><div><p>Vi Vu Bike mang đến dịch vụ thuê xe máy rõ ràng, giá công khai và xe được chăm sóc kỹ trước mỗi hành trình. Bạn chỉ cần chọn lịch phù hợp, hoàn tất xác minh và nhận xe.</p><a href="#chinh-sach">Xem chính sách hỗ trợ →</a></div></section>
 
-      <section className="section" id="xe"><div className="section-heading"><div><p className="eyebrow orange">XE ĐƯỢC YÊU THÍCH</p><h2>Chọn chiếc xe của bạn</h2></div><a href="#bang-gia">Xem bảng giá đầy đủ →</a></div><div className="filters">{["Tất cả xe", "Tay ga", "Xe số", "Côn tay"].map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div>{visibleBikes.length ? <div className="bike-grid">{visibleBikes.map((bike, index) => <article className="bike-card" key={bike.id}><div className="bike-image"><img src={bike.image} alt={bike.name} /><span>{bike.type}</span><strong>0{index + 1}</strong></div><div className="bike-info"><small>{bike.specs}</small><h3>{bike.name}</h3><p>{bike.description}</p><ul>{bike.perks.map((perk) => <li key={perk}>✓ {perk}</li>)}</ul><div><b>{money(bike.price)}<i>/ngày</i></b><button onClick={() => account?.role === "customer" ? router.push(`/customer?view=rent&vehicleId=${bike.id}`) : setAuthMode("login")}>Đặt xe →</button></div></div></article>)}</div> : <div className="bike-empty"><b>Chưa có xe đang sẵn sàng</b><p>Danh sách xe sẽ hiển thị sau khi Admin thêm xe vào hệ thống.</p></div>}</section>
+      <section className="section" id="xe"><div className="section-heading"><div><p className="eyebrow orange">XE ĐƯỢC YÊU THÍCH</p><h2>Chọn chiếc xe của bạn</h2></div><a href="#bang-gia">Xem bảng giá đầy đủ →</a></div><div className="filters">{["Tất cả xe", "Tay ga", "Xe số", "Côn tay"].map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div>{visibleBikes.length ? <div className="bike-grid">{visibleBikes.map((bike, index) => <article className="bike-card" key={bike.id}><div className="bike-image"><img src={bike.image} alt={bike.name} /><span>{bike.type}</span><strong>0{index + 1}</strong></div><div className="bike-info"><small>{bike.specs}</small><h3>{bike.name}</h3><p>{bike.description}</p><ul>{bike.perks.map((perk) => <li key={perk}>✓ {perk}</li>)}</ul><div><b>{money(bike.price)}<i>/ngày</i></b><button onClick={() => account?.role === "customer" ? router.push(`/customer?view=rent&vehicleId=${bike.id}`) : router.push(`/guest-checkout?vehicleId=${bike.id}`)}>Đặt xe →</button></div></div></article>)}</div> : <div className="bike-empty"><b>Chưa có xe đang sẵn sàng</b><p>Danh sách xe sẽ hiển thị sau khi Admin thêm xe vào hệ thống.</p></div>}</section>
 
-      <section className="support" id="chinh-sach"><div className="section support-grid"><div><p className="eyebrow orange">CHÍNH SÁCH HỖ TRỢ</p><h2>Rõ ràng trước khi bạn bắt đầu chuyến đi.</h2><p>Hỗ trợ 24/7 qua hotline, tư vấn lịch trình miễn phí và đổi xe khi gặp lỗi kỹ thuật trong phạm vi hỗ trợ.</p><button className="outline" onClick={() => notify("Chính sách chi tiết sẽ được hiển thị tại trang hướng dẫn thuê.")}>Đọc chính sách đầy đủ →</button></div><div className="policy-grid"><article><b>01</b><h3>Thủ tục nhanh</h3><p>Đăng ký, gửi giấy tờ và chờ xác minh hồ sơ.</p></article><article><b>02</b><h3>Phụ kiện đi kèm</h3><p>02 mũ bảo hiểm và 01 áo mưa trong mỗi lượt thuê.</p></article><article><b>03</b><h3>Hỗ trợ sự cố</h3><p>Liên hệ hotline nếu xe có dấu hiệu bất thường.</p></article><article><b>04</b><h3>Giao nhận minh bạch</h3><p>Biên bản có tình trạng xe, phụ kiện và thời gian nhận trả.</p></article></div></div></section>
+      <section className="support" id="chinh-sach"><div className="section support-grid"><div><p className="eyebrow orange">CHÍNH SÁCH HỖ TRỢ</p><h2 style={{ color: 'white' }}>Rõ ràng trước khi bạn bắt đầu chuyến đi.</h2><p>Hỗ trợ 24/7 qua hotline, tư vấn lịch trình miễn phí và đổi xe khi gặp lỗi kỹ thuật trong phạm vi hỗ trợ.</p><button className="outline" onClick={() => notify("Chính sách chi tiết sẽ được hiển thị tại trang hướng dẫn thuê.")}>Đọc chính sách đầy đủ →</button></div><div className="policy-grid"><article><b>01</b><h3>Thủ tục nhanh</h3><p>Đăng ký, gửi giấy tờ và chờ xác minh hồ sơ.</p></article><article><b>02</b><h3>Phụ kiện đi kèm</h3><p>02 mũ bảo hiểm và 01 áo mưa trong mỗi lượt thuê.</p></article><article><b>03</b><h3>Hỗ trợ sự cố</h3><p>Liên hệ hotline nếu xe có dấu hiệu bất thường.</p></article><article><b>04</b><h3>Giao nhận minh bạch</h3><p>Biên bản có tình trạng xe, phụ kiện và thời gian nhận trả.</p></article></div></div></section>
 
       <section className="section pricing" id="bang-gia"><p className="eyebrow orange">BẢNG GIÁ THAM KHẢO</p><h2>Thuê lâu hơn, giá tốt hơn</h2><p>Đơn giá theo ngày, chưa gồm các khoản phát sinh đã được thỏa thuận.</p><div className="rate-table"><div className="rate-row rate-head"><span>Loại xe</span><span>1–5 ngày</span><span>6–10 ngày</span><span>11–20 ngày</span><span>Từ 21 ngày</span></div>{rates.map((rate) => <div className="rate-row" key={rate[0]}><b>{rate[0]}</b>{rate.slice(1).map((price) => <span key={price}>{money(price as number)}</span>)}</div>)}</div></section>
 

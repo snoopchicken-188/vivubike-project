@@ -1,6 +1,7 @@
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
+import { getStorage } from "firebase-admin/storage";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -21,8 +22,12 @@ function loadServiceAccount() {
 }
 
 if (!getApps().length) {
-  initializeApp({ credential: cert(loadServiceAccount()) });
+  initializeApp({ 
+    credential: cert(loadServiceAccount()),
+    storageBucket: "vivubike-86b86.firebasestorage.app"
+  });
 }
 
 export const firebaseAdminAuth = getAuth();
 export const firebaseAdminDb = getFirestore();
+export const firebaseAdminStorage = getStorage();
