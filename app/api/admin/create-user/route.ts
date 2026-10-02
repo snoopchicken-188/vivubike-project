@@ -1,57 +1,113 @@
 import { NextResponse } from "next/server";
 import { firebaseAdminAuth, firebaseAdminDb } from "../../../../lib/firebase-admin";
 
-export async function POST(req: Request) {
-  try {
-    const { fullName, email, phone, password, role } = await req.json();
+export const runtime = "nodejs";
 
-    if (!fullName || !email || !password || !role) {
-      return NextResponse.json({ error: "Vui lòng điền đầy đủ các trường bắt buộc." }, { status: 400 });
+const CREATABLE_ROLES = new Set(["staff", "business_manager"]);
+
+function jsonError(error: string, status: number) {
+  return NextResponse.json({ error }, { status });
+}
+
+export async function POST(request: Request) {
+  const authorization = request.headers.get("authorization") || "";
+  const token = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+
+  if (!token) {
+    return jsonError("Bạn cần đăng nhập để thực hiện thao tác này.", 401);
+  }
+
+  try {
+    const decodedToken = await firebaseAdminAuth.verifyIdToken(token);
+    const requester = await firebaseAdminDb
+      .collection("users")
+      .doc(decodedToken.uid)
+      .get();
+
+    if (!requester.exists || requester.data()?.role !== "admin") {
+      return jsonError("Chỉ quản trị viên mới được cấp tài khoản nhân sự.", 403);
+    }
+
+    const body = (await request.json()) as Record<string, unknown>;
+    const fullName = String(body.fullName || "").trim();
+    const email = String(body.email || "").trim().toLowerCase();
+    const phone = String(body.phone || "").trim();
+    const password = String(body.password || "");
+    const role = String(body.role || "").trim();
+
+    if (!fullName || !email || !phone || !password || !role) {
+      return jsonError("Vui lòng nhập đầy đủ thông tin tài khoản.", 400);
+    }
+
+    if (!CREATABLE_ROLES.has(role)) {
+      return jsonError("Vai trò được chọn không hợp lệ.", 400);
     }
 
     if (password.length < 6) {
-      return NextResponse.json({ error: "Mật khẩu phải có ít nhất 6 ký tự." }, { status: 400 });
+      return jsonError("Mật khẩu phải có ít nhất 6 ký tự.", 400);
     }
 
-    // Prepare create payload
-    const createPayload: any = {
+    const createdUser = await firebaseAdminAuth.createUser({
       email,
       password,
       displayName: fullName,
-    };
-    if (phone) {
-      createPayload.phoneNumber = phone; // Format needs to be E.164 (e.g. +84...)
-    }
+      disabled: false,
+    });
 
-    // Create user in Firebase Auth
-    let userRecord;
     try {
-      userRecord = await firebaseAdminAuth.createUser(createPayload);
-    } catch (authError: any) {
-      console.error("Auth error:", authError);
-      return NextResponse.json({ error: authError.message || "Không thể tạo tài khoản trên Firebase Auth." }, { status: 400 });
-    }
-
-    // Save user profile in Firestore
-    try {
-      await firebaseAdminDb.collection("users").doc(userRecord.uid).set({
-        uid: userRecord.uid,
+      await firebaseAdminDb.collection("users").doc(createdUser.uid).set({
+        uid: createdUser.uid,
         fullName,
         email,
-        phone: phone || "",
-        role: role,
+        phone,
+        role,
         isBlocked: false,
-        verificationStatus: "verified",
+        verificationStatus: "not_required",
         createdAt: new Date(),
+        createdBy: decodedToken.uid,
       });
-    } catch (dbError: any) {
-      console.error("Firestore error:", dbError);
-      return NextResponse.json({ error: "Tài khoản đã tạo nhưng lỗi khi lưu Firestore." }, { status: 500 });
+    } catch (databaseError) {
+      await firebaseAdminAuth.deleteUser(createdUser.uid);
+      throw databaseError;
     }
 
-    return NextResponse.json({ success: true, uid: userRecord.uid });
-  } catch (error: any) {
-    console.error("Server error:", error);
-    return NextResponse.json({ error: "Lỗi máy chủ nội bộ." }, { status: 500 });
+    return NextResponse.json(
+      {
+        message: "Cấp tài khoản thành công.",
+        user: {
+          uid: createdUser.uid,
+          fullName,
+          email,
+          role,
+        },
+      },
+      { status: 201 },
+    );
+  } catch (error: unknown) {
+    const code =
+      typeof error === "object" && error && "code" in error
+        ? String((error as { code: string }).code)
+        : "";
+
+    if (code === "auth/id-token-expired" || code === "auth/argument-error") {
+      return jsonError("Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.", 401);
+    }
+
+    if (code === "auth/email-already-exists") {
+      return jsonError("Email này đã được sử dụng cho một tài khoản khác.", 409);
+    }
+
+    if (code === "auth/invalid-email") {
+      return jsonError("Email không hợp lệ.", 400);
+    }
+
+    if (code === "auth/invalid-password") {
+      return jsonError("Mật khẩu không hợp lệ.", 400);
+    }
+
+    console.error("Không thể cấp tài khoản nhân sự:", error);
+    return jsonError("Không thể cấp tài khoản. Vui lòng thử lại.", 500);
   }
 }

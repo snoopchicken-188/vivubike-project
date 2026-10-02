@@ -28,15 +28,29 @@ type Bike = {
   price: number;
   image: string;
   note: string;
+  status: string;
+  isVisible: boolean;
 };
 type Location = { id: string; name: string };
 type Booking = {
+  id: string;
   code: string;
   bike: string;
   dates: string;
   location: string;
   total: string;
   status: BookingStatus;
+  vehicleImage: string;
+  dailyPrice: number;
+  rentalDays: number;
+  note: string;
+  amenities: string[];
+  customerName: string;
+  customerEmail: string;
+  customerPhone: string;
+  startDate: string;
+  endDate: string;
+  createdAt: unknown;
 };
 
 const menu: { id: View; icon: string; label: string }[] = [
@@ -64,12 +78,13 @@ const initials = (name: string) =>
     .map((word) => word[0])
     .join("")
     .toUpperCase() || "KH";
+const isVerified = (status: string) =>
+  status === "approved" || status === "staff_approved";
+
 const verificationLabel = (status: string) =>
-  status === "approved"
+  isVerified(status)
     ? "Đã xác minh"
-    : status === "staff_approved"
-      ? "Chờ Admin duyệt cuối"
-      : status === "pending"
+    : status === "pending"
         ? "Đang chờ Staff kiểm tra"
         : status === "needs_update"
           ? "Cần bổ sung hồ sơ"
@@ -97,6 +112,7 @@ export default function CustomerPage() {
   const [locations, setLocations] = useState<Location[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [selectedBikeId, setSelectedBikeId] = useState("");
+  const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (user) => {
@@ -165,9 +181,14 @@ export default function CustomerPage() {
                 price: Number(data.dailyPrice || 0),
                 image: String(data.image || ""),
                 note: String(data.description || ""),
+                status: String(data.status || "available"),
+                isVisible: data.isVisible !== false,
               };
             })
-            .filter((bike) => bike.price > 0),
+            .filter(
+              (bike) =>
+                bike.price > 0 && bike.isVisible && bike.status === "available",
+            ),
         );
       },
       () => notify("Không thể tải danh sách xe."),
@@ -201,12 +222,26 @@ export default function CustomerPage() {
           snapshot.docs.map((item) => {
             const data = item.data();
             return {
+              id: item.id,
               code: String(data.code || item.id),
               bike: String(data.vehicleName || "Xe thuê"),
               dates: `${String(data.startDate || "")} — ${String(data.endDate || "")}`,
               location: String(data.pickupLocationName || ""),
               total: `${new Intl.NumberFormat("vi-VN").format(Number(data.totalAmount || 0))}đ`,
               status: String(data.status || "Chờ xác nhận") as BookingStatus,
+              vehicleImage: String(data.vehicleImage || ""),
+              dailyPrice: Number(data.dailyPrice || 0),
+              rentalDays: Number(data.rentalDays || 0),
+              note: String(data.note || ""),
+              amenities: Array.isArray(data.amenities)
+                ? data.amenities.map((value) => String(value))
+                : [],
+              customerName: String(data.customerName || data.guestName || ""),
+              customerEmail: String(data.customerEmail || data.guestEmail || ""),
+              customerPhone: String(data.customerPhone || data.guestPhone || ""),
+              startDate: String(data.startDate || ""),
+              endDate: String(data.endDate || ""),
+              createdAt: data.createdAt,
             };
           }),
         );
@@ -320,6 +355,7 @@ export default function CustomerPage() {
         customerEmail: account.email,
         vehicleId: bike.id,
         vehicleName: bike.name,
+        vehicleImage: bike.image,
         dailyPrice: bike.price,
         pickupLocationId: location.id,
         pickupLocationName: location.name,
@@ -339,6 +375,11 @@ export default function CustomerPage() {
         "Không thể tạo đơn. Hãy kiểm tra Firestore Rules cho collection bookings.",
       );
     }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    window.location.assign("/");
   };
 
   return (
@@ -396,10 +437,7 @@ export default function CustomerPage() {
         </nav>
         <button
           className="logout"
-          onClick={async () => {
-            await signOut(auth);
-            window.location.href = "/";
-          }}
+          onClick={handleLogout}
         >
           ↪ Đăng xuất
         </button>
@@ -431,7 +469,7 @@ export default function CustomerPage() {
             locations={locations}
             selectedBikeId={selectedBikeId}
             setSelectedBikeId={setSelectedBikeId}
-            verified={account.verificationStatus === "approved"}
+            verified={isVerified(account.verificationStatus)}
             onBooking={createBooking}
           />
         )}
@@ -440,11 +478,7 @@ export default function CustomerPage() {
             filter={bookingFilter}
             setFilter={setBookingFilter}
             data={filteredBookings}
-            onDetail={() =>
-              notify(
-                "Trang chi tiết đơn thuê sẽ được nối với Firestore ở bước tiếp theo.",
-              )
-            }
+            onDetail={setSelectedBooking}
           />
         )}
         {view === "verify" && (
@@ -467,6 +501,13 @@ export default function CustomerPage() {
           />
         )}
       </section>
+
+      {selectedBooking && (
+        <BookingDetail
+          booking={selectedBooking}
+          onClose={() => setSelectedBooking(null)}
+        />
+      )}
 
       <style jsx global>{`
         @import url("https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&display=swap");
@@ -581,7 +622,10 @@ export default function CustomerPage() {
         }
         nav {
           display: grid;
+          flex: 1;
           gap: 5px;
+          min-height: 0;
+          overflow-y: auto;
         }
         .home-link {
           color: #fff;
@@ -627,8 +671,9 @@ export default function CustomerPage() {
         }
         .logout {
           border-top: 1px solid #333;
-          margin: 25px 8px 0;
-          padding-left: 4px;
+          flex: 0 0 auto;
+          margin: 10px 8px 0;
+          padding: 16px 4px 0;
         }
         .content {
           min-width: 0;
@@ -1190,9 +1235,12 @@ export default function CustomerPage() {
             display: none;
           }
           .customer-card,
-          .verify-mini,
-          .logout {
+          .verify-mini {
             display: none;
+          }
+          .logout {
+            display: block;
+            margin: 12px 8px 0;
           }
           .content {
             min-width: 0;
@@ -1267,6 +1315,373 @@ export default function CustomerPage() {
           }
         }
       `}</style>
+      <style jsx global>{`
+        .bike-card.chosen {
+          border: 2px solid #f26522;
+          box-shadow: 0 12px 30px rgba(242, 101, 34, 0.16);
+        }
+        .rental-checkout {
+          background: #fff;
+          border: 1px solid #e4e7e9;
+          display: grid;
+          gap: 0;
+          grid-template-columns: minmax(0, 1.25fr) minmax(310px, 0.75fr);
+          margin-top: 28px;
+        }
+        .rental-form {
+          padding: 30px;
+        }
+        .rental-form-head {
+          border-bottom: 1px solid #e9eaeb;
+          margin-bottom: 24px;
+          padding-bottom: 21px;
+        }
+        .rental-form-head p,
+        .rental-summary > p,
+        .modal-title p,
+        .modal-bike small {
+          color: #e95c20;
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.12em;
+          margin: 0 0 8px;
+        }
+        .rental-form-head h2 {
+          font-size: 24px;
+          letter-spacing: -0.04em;
+          margin: 0 0 8px;
+        }
+        .rental-form-head > span {
+          color: #687078;
+          display: block;
+          font-size: 13px;
+          line-height: 1.6;
+        }
+        .rental-form-head span b {
+          color: #c65019;
+        }
+        .rental-fields {
+          display: grid;
+          gap: 16px;
+          grid-template-columns: 1fr 1fr;
+        }
+        .rental-fields .field.wide {
+          grid-column: 1 / -1;
+        }
+        .rental-fields .field > span {
+          color: #858d93;
+          font-size: 11px;
+          font-weight: 500;
+        }
+        .rental-fields input,
+        .rental-fields select,
+        .rental-fields textarea {
+          background: #fff;
+          border: 1px solid #dce1e4;
+          color: #1e252a;
+          font: inherit;
+          font-size: 13px;
+          min-height: 43px;
+          padding: 10px 11px;
+        }
+        .rental-fields input:read-only {
+          background: #f7f8f9;
+          color: #566068;
+        }
+        .rental-fields select:focus,
+        .rental-fields input:focus,
+        .rental-fields textarea:focus {
+          border-color: #f26522;
+          outline: 2px solid rgba(242, 101, 34, 0.12);
+        }
+        .rental-fields textarea {
+          min-height: 92px;
+          resize: vertical;
+        }
+        .rental-actions {
+          align-items: center;
+          display: flex;
+          gap: 18px;
+          margin-top: 24px;
+        }
+        .rental-actions .button {
+          border-radius: 7px;
+          padding: 13px 17px;
+        }
+        .rental-actions .button:disabled {
+          background: #b8bfc4;
+          cursor: not-allowed;
+        }
+        .rental-summary {
+          background: #1a1d20;
+          color: #fff;
+          padding: 30px;
+        }
+        .rental-summary > p {
+          color: #ff9767;
+        }
+        .rental-bike {
+          align-items: center;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+          display: flex;
+          gap: 13px;
+          padding: 6px 0 22px;
+        }
+        .rental-bike img,
+        .rental-bike > span {
+          background: #343a40;
+          display: grid;
+          flex: 0 0 auto;
+          height: 68px;
+          object-fit: cover;
+          place-items: center;
+          width: 82px;
+        }
+        .rental-bike small,
+        .rental-bike b,
+        .rental-bike strong {
+          display: block;
+        }
+        .rental-bike small {
+          color: #ffaf89;
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          margin-bottom: 5px;
+        }
+        .rental-bike b {
+          font-size: 15px;
+        }
+        .rental-bike strong {
+          color: #fff;
+          font-size: 12px;
+          margin-top: 6px;
+        }
+        .summary-line {
+          border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+          display: grid;
+          gap: 7px;
+          padding: 17px 0;
+        }
+        .summary-line span,
+        .summary-total span {
+          color: #abb5bc;
+          font-size: 12px;
+        }
+        .summary-line b {
+          font-size: 13px;
+          line-height: 1.45;
+        }
+        .summary-total {
+          border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+          padding: 19px 0;
+        }
+        .summary-total b,
+        .summary-total small {
+          display: block;
+        }
+        .summary-total b {
+          color: #ff8c59;
+          font-size: 24px;
+          letter-spacing: -0.04em;
+          margin: 7px 0;
+        }
+        .summary-total small {
+          color: #aeb8be;
+          font-size: 11px;
+          line-height: 1.5;
+        }
+        .summary-included {
+          display: grid;
+          gap: 8px;
+          padding-top: 19px;
+        }
+        .summary-included b {
+          font-size: 12px;
+        }
+        .summary-included span {
+          color: #cdd4d8;
+          font-size: 12px;
+        }
+        .booking-modal-backdrop {
+          align-items: center;
+          background: rgba(15, 19, 22, 0.6);
+          display: flex;
+          inset: 0;
+          justify-content: center;
+          padding: 24px;
+          position: fixed;
+          z-index: 100;
+        }
+        .booking-modal {
+          background: #fff;
+          box-shadow: 0 30px 70px rgba(0, 0, 0, 0.28);
+          max-height: calc(100vh - 48px);
+          max-width: 760px;
+          overflow: auto;
+          padding: 30px;
+          position: relative;
+          width: 100%;
+        }
+        .modal-close {
+          align-items: center;
+          background: #f1f3f4;
+          border: 0;
+          border-radius: 50%;
+          display: flex;
+          font-size: 14px;
+          height: 32px;
+          justify-content: center;
+          position: absolute;
+          right: 22px;
+          top: 22px;
+          width: 32px;
+        }
+        .modal-title {
+          align-items: flex-start;
+          border-bottom: 1px solid #e9ecee;
+          display: flex;
+          gap: 16px;
+          justify-content: space-between;
+          padding-bottom: 21px;
+          padding-right: 44px;
+        }
+        .modal-title h2 {
+          font-size: 25px;
+          letter-spacing: -0.04em;
+          margin: 0 0 5px;
+        }
+        .modal-title small {
+          color: #737d84;
+          font-size: 11px;
+        }
+        .modal-bike {
+          align-items: center;
+          background: #f6f7f8;
+          display: flex;
+          gap: 15px;
+          margin: 22px 0;
+          padding: 15px;
+        }
+        .modal-bike img,
+        .modal-bike > span {
+          background: #e5e8eb;
+          display: grid;
+          height: 68px;
+          object-fit: cover;
+          place-items: center;
+          width: 92px;
+        }
+        .modal-bike h3 {
+          font-size: 17px;
+          margin: 0 0 5px;
+        }
+        .modal-bike p {
+          color: #e95c20;
+          font-size: 13px;
+          font-weight: 800;
+          margin: 0;
+        }
+        .detail-grid {
+          display: grid;
+          gap: 12px;
+          grid-template-columns: 1fr 1fr;
+        }
+        .detail-grid article,
+        .detail-note,
+        .detail-included {
+          border: 1px solid #e4e7e9;
+          padding: 16px;
+        }
+        .detail-grid span,
+        .detail-grid b,
+        .detail-grid small {
+          display: block;
+        }
+        .detail-grid span {
+          color: #737d84;
+          font-size: 11px;
+          margin-bottom: 7px;
+        }
+        .detail-grid b {
+          color: #21282e;
+          font-size: 13px;
+          line-height: 1.45;
+        }
+        .detail-grid small {
+          color: #7a838a;
+          font-size: 11px;
+          line-height: 1.45;
+          margin-top: 5px;
+        }
+        .detail-note,
+        .detail-included {
+          margin-top: 12px;
+        }
+        .detail-note b,
+        .detail-included b {
+          display: block;
+          font-size: 12px;
+        }
+        .detail-note p {
+          color: #5f6a72;
+          font-size: 13px;
+          line-height: 1.6;
+          margin: 8px 0 0;
+        }
+        .detail-included > div {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 11px;
+        }
+        .detail-included span {
+          background: #fff2eb;
+          color: #c7511b;
+          font-size: 11px;
+          font-weight: 700;
+          padding: 7px 8px;
+        }
+        .modal-button {
+          border-radius: 7px;
+          margin-top: 20px;
+        }
+        @media (max-width: 900px) {
+          .rental-checkout {
+            grid-template-columns: 1fr;
+          }
+          .rental-summary {
+            order: -1;
+          }
+        }
+        @media (max-width: 620px) {
+          .rental-form,
+          .rental-summary,
+          .booking-modal {
+            padding: 20px;
+          }
+          .rental-fields,
+          .detail-grid {
+            grid-template-columns: 1fr;
+          }
+          .rental-fields .field.wide {
+            grid-column: auto;
+          }
+          .booking-modal-backdrop {
+            align-items: flex-start;
+            overflow: auto;
+            padding: 12px;
+          }
+          .booking-modal {
+            max-height: none;
+            margin: auto 0;
+          }
+          .modal-title {
+            align-items: flex-start;
+            flex-direction: column;
+          }
+        }
+      `}</style>
     </main>
   );
 }
@@ -1280,7 +1695,7 @@ function Overview({
   fullName: string;
   verificationStatus: string;
 }) {
-  const verified = verificationStatus === "approved";
+  const verified = isVerified(verificationStatus);
   return (
     <div className="page">
       {!verified && (
@@ -1377,9 +1792,26 @@ function Rent({
   verified: boolean;
   onBooking: (event: FormEvent<HTMLFormElement>) => Promise<void>;
 }) {
+  const [locationId, setLocationId] = useState("");
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [note, setNote] = useState("");
   const selectedBike = bikes.find((bike) => bike.id === selectedBikeId);
   const money = (value: number) =>
     `${new Intl.NumberFormat("vi-VN").format(value)}đ/ngày`;
+  const days =
+    startDate && endDate
+      ? Math.max(
+          0,
+          Math.ceil(
+            (new Date(endDate).getTime() - new Date(startDate).getTime()) /
+              86400000,
+          ),
+        )
+      : 0;
+  const total = selectedBike ? days * selectedBike.price : 0;
+  const today = new Date().toISOString().slice(0, 10);
+
   return (
     <div className="page">
       <div className="section-title">
@@ -1403,7 +1835,10 @@ function Rent({
       ) : (
         <div className="bike-grid">
           {bikes.map((bike) => (
-            <article className="bike-card" key={bike.id}>
+            <article
+              className={`bike-card ${selectedBikeId === bike.id ? "chosen" : ""}`}
+              key={bike.id}
+            >
               <img src={bike.image} alt={bike.name} />
               <main>
                 <small>{bike.type}</small>
@@ -1424,63 +1859,131 @@ function Rent({
         </div>
       )}
       {selectedBike && (
-        <form className="booking-form" onSubmit={onBooking}>
-          <h2>Đặt {selectedBike.name}</h2>
-          <p>
-            Đơn sẽ ở trạng thái <b>Chờ xác nhận</b> cho đến khi Staff xử lý.
-          </p>
-          <input type="hidden" name="vehicleId" value={selectedBike.id} />
-          <div className="form-grid">
-            <label className="field">
-              Xe đã chọn
-              <input
-                value={`${selectedBike.name} · ${money(selectedBike.price)}`}
-                readOnly
-              />
-            </label>
-            <label className="field">
-              Điểm nhận xe
-              <select name="locationId" required defaultValue="">
-                <option value="" disabled>
-                  Chọn địa điểm
-                </option>
-                {locations.map((location) => (
-                  <option key={location.id} value={location.id}>
-                    {location.name}
+        <section className="rental-checkout">
+          <form className="rental-form" onSubmit={onBooking}>
+            <div className="rental-form-head">
+              <p>PHIẾU YÊU CẦU THUÊ</p>
+              <h2>Hoàn tất thông tin nhận xe</h2>
+              <span>
+                Đơn sẽ ở trạng thái <b>Chờ xác nhận</b> cho đến khi Staff xử lý.
+              </span>
+            </div>
+            <input type="hidden" name="vehicleId" value={selectedBike.id} />
+
+            <div className="rental-fields">
+              <label className="field wide">
+                Xe đã chọn
+                <input
+                  value={`${selectedBike.name} · ${money(selectedBike.price)}`}
+                  readOnly
+                />
+              </label>
+              <label className="field wide">
+                Điểm nhận xe
+                <select
+                  name="locationId"
+                  required
+                  value={locationId}
+                  onChange={(event) => setLocationId(event.target.value)}
+                >
+                  <option value="" disabled>
+                    Chọn địa điểm nhận xe
                   </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              Ngày nhận
-              <input name="startDate" type="date" required />
-            </label>
-            <label className="field">
-              Ngày trả
-              <input name="endDate" type="date" required />
-            </label>
-          </div>
-          <label className="field">
-            Ghi chú cho Staff
-            <textarea
-              name="note"
-              placeholder="Ví dụ: thời gian dự kiến đến nhận xe"
-            />
-          </label>
-          <small className="included">Đi kèm: 02 mũ bảo hiểm · 01 áo mưa</small>
-          <div>
-            <button className="button" disabled={!verified}>
-              {verified ? "Gửi yêu cầu thuê xe" : "Cần xác minh tài khoản"}
-            </button>
-            <button
-              type="button"
-              className="text-button cancel-choice"
-              onClick={() => setSelectedBikeId("")}
-            >
-              Bỏ chọn
-            </button>
-          </div>
-        </form>
+                  {locations.map((location) => (
+                    <option key={location.id} value={location.id}>
+                      {location.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                Ngày nhận xe
+                <input
+                  name="startDate"
+                  type="date"
+                  min={today}
+                  required
+                  value={startDate}
+                  onChange={(event) => setStartDate(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                Ngày trả xe
+                <input
+                  name="endDate"
+                  type="date"
+                  min={startDate || today}
+                  required
+                  value={endDate}
+                  onChange={(event) => setEndDate(event.target.value)}
+                />
+              </label>
+              <label className="field wide">
+                Ghi chú cho Staff <span>(không bắt buộc)</span>
+                <textarea
+                  name="note"
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                  placeholder="Ví dụ: thời gian dự kiến đến nhận xe"
+                />
+              </label>
+            </div>
+
+            <div className="rental-actions">
+              <button className="button" disabled={!verified}>
+                {verified ? "Gửi yêu cầu thuê xe" : "Cần xác minh tài khoản"}
+              </button>
+              <button
+                type="button"
+                className="text-button cancel-choice"
+                onClick={() => setSelectedBikeId("")}
+              >
+                Bỏ chọn xe
+              </button>
+            </div>
+          </form>
+
+          <aside className="rental-summary">
+            <p>TÓM TẮT ĐƠN THUÊ</p>
+            <div className="rental-bike">
+              {selectedBike.image ? (
+                <img src={selectedBike.image} alt={selectedBike.name} />
+              ) : (
+                <span>⌁</span>
+              )}
+              <div>
+                <small>{selectedBike.type}</small>
+                <b>{selectedBike.name}</b>
+                <strong>{money(selectedBike.price)}</strong>
+              </div>
+            </div>
+            <div className="summary-line">
+              <span>Thời gian thuê</span>
+              <b>{days ? `${days} ngày` : "Chưa chọn ngày"}</b>
+            </div>
+            <div className="summary-line">
+              <span>Điểm nhận</span>
+              <b>
+                {locations.find((location) => location.id === locationId)?.name ||
+                  "Chưa chọn địa điểm"}
+              </b>
+            </div>
+            <div className="summary-total">
+              <span>Tổng tiền tạm tính</span>
+              <b>
+                {days
+                  ? `${new Intl.NumberFormat("vi-VN").format(total)}đ`
+                  : "—"}
+              </b>
+              <small>Giá chính thức được xác nhận trước khi giao xe.</small>
+            </div>
+            <div className="summary-included">
+              <b>Đi kèm trong đơn</b>
+              <span>✓ 02 mũ bảo hiểm</span>
+              <span>✓ 01 áo mưa</span>
+            </div>
+          </aside>
+        </section>
       )}
       <section className="panel">
         <div className="panel-head">
@@ -1515,7 +2018,7 @@ function Bookings({
   filter: string;
   setFilter: (value: string) => void;
   data: Booking[];
-  onDetail: () => void;
+  onDetail: (booking: Booking) => void;
 }) {
   const filters = [
     "Tất cả",
@@ -1571,7 +2074,10 @@ function Bookings({
                   </span>
                 </td>
                 <td>
-                  <button className="text-button" onClick={onDetail}>
+                  <button
+                    className="text-button"
+                    onClick={() => onDetail(booking)}
+                  >
                     Chi tiết
                   </button>
                 </td>
@@ -1584,6 +2090,130 @@ function Bookings({
             )}
           </tbody>
         </table>
+      </section>
+    </div>
+  );
+}
+
+function BookingDetail({
+  booking,
+  onClose,
+}: {
+  booking: Booking;
+  onClose: () => void;
+}) {
+  const money = (value: number) =>
+    `${new Intl.NumberFormat("vi-VN").format(value)}đ`;
+  const dateText = (value: string) => {
+    if (!value) return "Chưa cập nhật";
+    const date = new Date(`${value}T00:00:00`);
+    return Number.isNaN(date.getTime())
+      ? value
+      : new Intl.DateTimeFormat("vi-VN", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+        }).format(date);
+  };
+  const createdAtText = (value: unknown) => {
+    const timestamp = value as { toDate?: () => Date } | undefined;
+    const date =
+      value instanceof Date
+        ? value
+        : typeof timestamp?.toDate === "function"
+          ? timestamp.toDate()
+          : null;
+    return date
+      ? new Intl.DateTimeFormat("vi-VN", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        }).format(date)
+      : "Đơn vừa được tạo";
+  };
+
+  return (
+    <div
+      className="booking-modal-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="booking-modal" role="dialog" aria-modal="true">
+        <button className="modal-close" onClick={onClose} aria-label="Đóng">
+          ✕
+        </button>
+        <div className="modal-title">
+          <div>
+            <p>CHI TIẾT ĐƠN THUÊ</p>
+            <h2>{booking.code}</h2>
+            <small>Tạo lúc {createdAtText(booking.createdAt)}</small>
+          </div>
+          <span className={`tag ${statusClass(booking.status)}`}>
+            {booking.status}
+          </span>
+        </div>
+
+        <div className="modal-bike">
+          {booking.vehicleImage ? (
+            <img src={booking.vehicleImage} alt={booking.bike} />
+          ) : (
+            <span>⌁</span>
+          )}
+          <div>
+            <small>XE ĐÃ ĐẶT</small>
+            <h3>{booking.bike}</h3>
+            <p>{booking.dailyPrice ? `${money(booking.dailyPrice)}/ngày` : "Giá thuê được Staff xác nhận"}</p>
+          </div>
+        </div>
+
+        <div className="detail-grid">
+          <article>
+            <span>Thời gian thuê</span>
+            <b>
+              {dateText(booking.startDate)} — {dateText(booking.endDate)}
+            </b>
+            <small>{booking.rentalDays ? `${booking.rentalDays} ngày thuê` : "Đang chờ xác nhận"}</small>
+          </article>
+          <article>
+            <span>Điểm nhận xe</span>
+            <b>{booking.location || "Đang cập nhật"}</b>
+            <small>Staff sẽ xác nhận thời gian nhận xe</small>
+          </article>
+          <article>
+            <span>Khách thuê</span>
+            <b>{booking.customerName || "Khách hàng"}</b>
+            <small>{booking.customerPhone || booking.customerEmail || "Thông tin trong hồ sơ"}</small>
+          </article>
+          <article>
+            <span>Tổng tiền dự kiến</span>
+            <b>{booking.total}</b>
+            <small>Chưa bao gồm phát sinh (nếu có)</small>
+          </article>
+        </div>
+
+        <div className="detail-note">
+          <b>Ghi chú cho Staff</b>
+          <p>{booking.note || "Khách hàng chưa để lại ghi chú."}</p>
+        </div>
+
+        <div className="detail-included">
+          <b>Phụ kiện đi kèm</b>
+          <div>
+            {(booking.amenities.length
+              ? booking.amenities
+              : ["02 mũ bảo hiểm", "01 áo mưa"]
+            ).map((amenity) => (
+              <span key={amenity}>✓ {amenity}</span>
+            ))}
+          </div>
+        </div>
+
+        <button className="button modal-button" onClick={onClose}>
+          Đã hiểu
+        </button>
       </section>
     </div>
   );
