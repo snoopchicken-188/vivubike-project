@@ -22,11 +22,11 @@ type Rate = [string, number, number, number, number];
 
 const slides = [
 
-  { image: "https://images.unsplash.com/photo-1558981806-ec527fa84c39?auto=format&fit=crop&w=2200&q=90", eyebrow: "THUÊ XE MÁY TẠI HÀ NỘI", title: "Chọn xe tốt.", accent: "Đi thật xa.", text: "Xe mới, giao nhận rõ ràng và thủ tục đơn giản cho hành trình của bạn." },
+  { image: "https://images.unsplash.com/photo-1558981806-ec527fa84c39?auto=format&fit=crop&w=2200&q=90", eyebrow: "THUÊ XE MÁY TẠI HÀ NỘI", title: "Chọn xe tốt", accent: "Đi thật xa", text: "Xe mới, giao nhận rõ ràng và thủ tục đơn giản cho hành trình của bạn." },
 
-  { image: "https://images.unsplash.com/photo-1750900142272-b2c6f4867c79?auto=format&fit=crop&w=2200&q=90", eyebrow: "KHÁM PHÁ PHỐ PHƯỜNG", title: "Đi chậm lại.", accent: "Cảm nhận nhiều hơn.", text: "Chủ động lịch trình và khám phá Hà Nội theo cách của riêng bạn." },
+  { image: "https://images.unsplash.com/photo-1750900142272-b2c6f4867c79?auto=format&fit=crop&w=2200&q=90", eyebrow: "KHÁM PHÁ PHỐ PHƯỜNG", title: "Đi chậm lại", accent: "Cảm nhận nhiều hơn", text: "Chủ động lịch trình và khám phá Hà Nội theo cách của riêng bạn." },
 
-  { image: "https://cdn.prod.website-files.com/65ecc09cac93eb01ba966de4/6927547dcc39a0b47b022b26_Backroads%20Vietnam%20mit%20Erik%20Peters%20HEADER.jpg", eyebrow: "SẴN SÀNG LÊN ĐƯỜNG", title: "Vững tay lái.", accent: "An tâm hành trình.", text: "Xe được bảo dưỡng định kỳ và đội ngũ luôn sẵn sàng hỗ trợ bạn." },
+  { image: "https://cdn.prod.website-files.com/65ecc09cac93eb01ba966de4/6927547dcc39a0b47b022b26_Backroads%20Vietnam%20mit%20Erik%20Peters%20HEADER.jpg", eyebrow: "SẴN SÀNG LÊN ĐƯỜNG", title: "Vững tay lái", accent: "An tâm hành trình", text: "Xe được bảo dưỡng định kỳ và đội ngũ luôn sẵn sàng hỗ trợ bạn." },
 
 ];
 
@@ -50,13 +50,15 @@ export default function HomePage() {
 
   const [authMode, setAuthMode] = useState<"login" | "register" | "forgot" | null>(null);
 
+  const [guestModalBikeId, setGuestModalBikeId] = useState<string | null>(null);
+
   const [notice, setNotice] = useState("");
 
   const [account, setAccount] = useState<{ fullName: string; role: string } | null>(null);
 
   const [bikes, setBikes] = useState<Bike[]>([]);
 
-  const [locations, setLocations] = useState<string[]>([]);
+  const [searchBikeType, setSearchBikeType] = useState("all");
 
   const [rates, setRates] = useState<Rate[]>([]);
 
@@ -110,23 +112,7 @@ export default function HomePage() {
 
 
 
-  useEffect(() => {
-
-    return onSnapshot(collection(db, "locations"), (snapshot) => {
-
-      const items = snapshot.docs
-
-        .filter((item) => item.data().isActive)
-
-        .map((item) => String(item.data().name || ""))
-
-        .filter(Boolean);
-
-      setLocations(items);
-
-    });
-
-  }, []);
+  // Locations no longer needed — shop operates from a single location.
 
 
 
@@ -194,7 +180,19 @@ export default function HomePage() {
 
   const notify = (message: string) => { setNotice(message); window.setTimeout(() => setNotice(""), 3300); };
 
-  const handleSearch = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); document.getElementById("xe")?.scrollIntoView({ behavior: "smooth" }); notify("Kết quả xe phù hợp đang được hiển thị bên dưới."); };
+  const handleSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const typeMap: Record<string, string> = {
+      all: "Tất cả xe",
+      manual: "Xe số",
+      scooter: "Tay ga",
+      clutch: "Côn tay",
+    };
+    const mapped = typeMap[searchBikeType] || "Tất cả xe";
+    setFilter(mapped);
+    document.getElementById("xe")?.scrollIntoView({ behavior: "smooth" });
+    notify(mapped === "Tất cả xe" ? "Hiển thị tất cả xe đang trống." : `Đang lọc: ${mapped}.`);
+  };
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
 
@@ -388,9 +386,9 @@ export default function HomePage() {
 
         <div className="hero-overlay" />
 
-        <div className="hero-content" key={`content-${slide}`}><p className="eyebrow">{activeSlide.eyebrow}</p><h1>{activeSlide.title}<br /><em>{activeSlide.accent}</em></h1><p>{activeSlide.text}</p><div className="hero-tags"><span>✓ Xe bảo dưỡng định kỳ</span><span>✓ Hỗ trợ 24/7</span></div></div>
+        <div className="hero-content" key={`content-${slide}`}><p className="eyebrow">{activeSlide.eyebrow}</p><h1>{activeSlide.title}<br /><em>{activeSlide.accent}</em></h1><p style={{ color: "#f0f0f0" }}>{activeSlide.text}</p><div className="hero-tags"><span>✓ Xe bảo dưỡng định kỳ</span><span>✓ Hỗ trợ 24/7</span></div></div>
 
-        <form className="search-card" onSubmit={handleSearch}><h2><span>⌖</span> Tìm xe trống</h2><label>Điểm nhận xe<select required defaultValue=""><option value="" disabled>{locations.length ? "Chọn địa điểm" : "Chưa có địa điểm"}</option>{locations.map((location) => <option key={location}>{location}</option>)}</select></label><div className="search-grid"><label>Ngày nhận<input type="date" required defaultValue="2026-09-12" /></label><label>Ngày trả<input type="date" required defaultValue="2026-09-14" /></label></div><button className="primary-button">Tìm xe ngay <span>→</span></button></form>
+        <form className="search-card" onSubmit={handleSearch}><h2><span>⌖</span> Tìm xe trống</h2><label>Loại xe<select value={searchBikeType} onChange={(e) => setSearchBikeType(e.target.value)}><option value="all">Tất cả loại xe</option><option value="manual">Xe số</option><option value="scooter">Xe tay ga</option><option value="clutch">Xe côn tay</option></select></label><div className="search-grid"><label>Ngày nhận<input type="date" required defaultValue="2026-09-12" /></label><label>Ngày trả<input type="date" required defaultValue="2026-09-14" /></label></div><button className="primary-button">Tìm xe ngay <span>→</span></button></form>
 
         <div className="hero-controls"><button onClick={() => setSlide((slide + slides.length - 1) % slides.length)} aria-label="Ảnh trước">←</button><div>{slides.map((_, index) => <button key={index} onClick={() => setSlide(index)} className={index === slide ? "dot active" : "dot"} aria-label={`Ảnh ${index + 1}`} />)}</div><button onClick={() => setPaused(!paused)} aria-label="Tạm dừng ảnh">{paused ? "▶" : "Ⅱ"}</button><button onClick={() => setSlide((slide + 1) % slides.length)} aria-label="Ảnh tiếp">→</button></div>
 
@@ -398,15 +396,15 @@ export default function HomePage() {
 
 
 
-      <section className="section intro" id="gioi-thieu"><div><p className="eyebrow orange">GIỚI THIỆU</p><h2>Thuê xe chủ động cho mọi chuyến đi.</h2></div><div><p>Vi Vu Bike mang đến dịch vụ thuê xe máy rõ ràng, giá công khai và xe được chăm sóc kỹ trước mỗi hành trình. Bạn chỉ cần chọn lịch phù hợp, hoàn tất xác minh và nhận xe.</p><a href="/policies">Xem chính sách hỗ trợ →</a></div></section>
+      <section className="section intro" id="gioi-thieu"><div><p className="eyebrow orange">GIỚI THIỆU</p><h2>Thuê xe chủ động cho mọi chuyến đi</h2></div><div><p>Vi Vu Bike mang đến dịch vụ thuê xe máy rõ ràng, giá công khai và xe được chăm sóc kỹ trước mỗi hành trình. Bạn chỉ cần chọn lịch phù hợp, hoàn tất xác minh và nhận xe.</p><a href="/policies">Xem chính sách hỗ trợ →</a></div></section>
 
 
 
-      <section className="section" id="xe"><div className="section-heading"><div><p className="eyebrow orange">XE ĐƯỢC YÊU THÍCH</p><h2>Chọn chiếc xe của bạn</h2></div><a href="#bang-gia">Xem bảng giá đầy đủ →</a></div><div className="filters">{["Tất cả xe", "Tay ga", "Xe số", "Côn tay"].map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div>{visibleBikes.length ? <div className="bike-grid">{visibleBikes.map((bike, index) => <article className="bike-card" key={bike.id}><div className="bike-image"><img src={bike.image} alt={bike.name} /><span>{bike.type}</span><strong>0{index + 1}</strong></div><div className="bike-info"><small>{bike.specs}</small><h3>{bike.name}</h3><p>{bike.description}</p><ul>{bike.perks.map((perk) => <li key={perk}>✓ {perk}</li>)}</ul><div><b>{money(bike.price)}<i>/ngày</i></b><button onClick={() => account?.role === "customer" ? router.push(`/customer?view=rent&vehicleId=${bike.id}`) : setAuthMode("login")}>Đặt xe →</button></div></div></article>)}</div> : <div className="bike-empty"><b>Chưa có xe đang sẵn sàng</b><p>Danh sách xe sẽ hiển thị sau khi Admin thêm xe vào hệ thống.</p></div>}</section>
+      <section className="section" id="xe"><div className="section-heading"><div><p className="eyebrow orange">XE ĐƯỢC YÊU THÍCH</p><h2>Chọn chiếc xe của bạn</h2></div><a href="#bang-gia">Xem bảng giá đầy đủ →</a></div><div className="filters">{["Tất cả xe", "Tay ga", "Xe số", "Côn tay"].map((item) => <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>{item}</button>)}</div>{visibleBikes.length ? <div className="bike-grid">{visibleBikes.map((bike, index) => <article className="bike-card" key={bike.id}><div className="bike-image"><img src={bike.image} alt={bike.name} /><span>{bike.type}</span><strong>0{index + 1}</strong></div><div className="bike-info"><small>{bike.specs}</small><h3>{bike.name}</h3><p>{bike.description}</p><ul>{bike.perks.map((perk) => <li key={perk}>✓ {perk}</li>)}</ul><div><b>{money(bike.price)}<i>/ngày</i></b><button onClick={() => account?.role === "customer" ? router.push(`/customer?view=rent&vehicleId=${bike.id}`) : setGuestModalBikeId(bike.id)}>Đặt xe →</button></div></div></article>)}</div> : <div className="bike-empty"><b>Chưa có xe đang sẵn sàng</b><p>Danh sách xe sẽ hiển thị sau khi Admin thêm xe vào hệ thống.</p></div>}</section>
 
 
 
-      <section className="support" id="chinh-sach"><div className="section support-grid"><div><p className="eyebrow orange">CHÍNH SÁCH HỖ TRỢ</p><h2>Rõ ràng trước khi bạn bắt đầu chuyến đi.</h2><p>Hỗ trợ 24/7 qua hotline, tư vấn lịch trình miễn phí và đổi xe khi gặp lỗi kỹ thuật trong phạm vi hỗ trợ.</p><button className="outline" onClick={() => router.push("/policies")}>Đọc chính sách đầy đủ →</button></div><div className="policy-grid"><article><b>01</b><h3>Thủ tục nhanh</h3><p>Đăng ký, gửi giấy tờ và chờ xác minh hồ sơ.</p></article><article><b>02</b><h3>Phụ kiện đi kèm</h3><p>02 mũ bảo hiểm và 01 áo mưa trong mỗi lượt thuê.</p></article><article><b>03</b><h3>Hỗ trợ sự cố</h3><p>Liên hệ hotline nếu xe có dấu hiệu bất thường.</p></article><article><b>04</b><h3>Giao nhận minh bạch</h3><p>Biên bản có tình trạng xe, phụ kiện và thời gian nhận trả.</p></article></div></div></section>
+      <section className="support" id="chinh-sach"><div className="section support-grid"><div><p className="eyebrow orange">CHÍNH SÁCH HỖ TRỢ</p><h2 style={{ color: "#ffffff" }}>Rõ ràng trước khi bạn bắt đầu chuyến đi</h2><p>Hỗ trợ 24/7 qua hotline, tư vấn lịch trình miễn phí và đổi xe khi gặp lỗi kỹ thuật trong phạm vi hỗ trợ.</p><button className="outline" onClick={() => router.push("/policies")}>Đọc chính sách đầy đủ →</button></div><div className="policy-grid"><article><b>01</b><h3>Thủ tục nhanh</h3><p>Đăng ký, gửi giấy tờ và chờ xác minh hồ sơ.</p></article><article><b>02</b><h3>Phụ kiện đi kèm</h3><p>02 mũ bảo hiểm và 01 áo mưa trong mỗi lượt thuê.</p></article><article><b>03</b><h3>Hỗ trợ sự cố</h3><p>Liên hệ hotline nếu xe có dấu hiệu bất thường.</p></article><article><b>04</b><h3>Giao nhận minh bạch</h3><p>Biên bản có tình trạng xe, phụ kiện và thời gian nhận trả.</p></article></div></div></section>
 
 
 
@@ -414,7 +412,7 @@ export default function HomePage() {
 
 
 
-      <section className="reviews" id="danh-gia"><div className="section"><p className="eyebrow orange">PHẢN HỒI KHÁCH HÀNG</p><div className="section-heading"><h2>Những chuyến đi được nhớ lại.</h2><div className="score"><b>4.9</b><span>★★★★★<small>Từ 1.240 lượt thuê</small></span></div></div><div className="review-grid"><article><strong>“</strong><p>Xe sạch, nhận nhanh và nhân viên hướng dẫn rất kỹ. Tôi đã thuê Vision ba ngày để đi quanh Hà Nội.</p><footer><span>NT</span><div><b>Ngọc Trâm</b><small>Đã thuê Vision 110cc</small></div></footer></article><article><strong>“</strong><p>Giá được báo ngay từ đầu, xe chạy ổn định. Phần 2 mũ và áo mưa rất tiện vì tôi đi cùng bạn.</p><footer><span>MH</span><div><b>Minh Hoàng</b><small>Đã thuê Air Blade 125cc</small></div></footer></article><article><strong>“</strong><p>Lịch trả xe linh hoạt, đội ngũ hỗ trợ nhanh khi tôi cần hỏi đường và kiểm tra xe trước chuyến đi xa.</p><footer><span>AL</span><div><b>Anh Linh</b><small>Đã thuê Winner X 150cc</small></div></footer></article></div></div></section>
+      <section className="reviews" id="danh-gia"><div className="section"><p className="eyebrow orange">PHẢN HỒI KHÁCH HÀNG</p><div className="section-heading"><h2>Những chuyến đi được nhớ lại</h2><div className="score"><b>4.9</b><span>★★★★★<small>Từ 1.240 lượt thuê</small></span></div></div><div className="review-grid"><article><strong>“</strong><p>Xe sạch, nhận nhanh và nhân viên hướng dẫn rất kỹ. Tôi đã thuê Vision ba ngày để đi quanh Hà Nội.</p><footer><span>NT</span><div><b>Ngọc Trâm</b><small>Đã thuê Vision 110cc</small></div></footer></article><article><strong>“</strong><p>Giá được báo ngay từ đầu, xe chạy ổn định. Phần 2 mũ và áo mưa rất tiện vì tôi đi cùng bạn.</p><footer><span>MH</span><div><b>Minh Hoàng</b><small>Đã thuê Air Blade 125cc</small></div></footer></article><article><strong>“</strong><p>Lịch trả xe linh hoạt, đội ngũ hỗ trợ nhanh khi tôi cần hỏi đường và kiểm tra xe trước chuyến đi xa.</p><footer><span>AL</span><div><b>Anh Linh</b><small>Đã thuê Winner X 150cc</small></div></footer></article></div></div></section>
 
 
 
@@ -426,7 +424,100 @@ export default function HomePage() {
 
 
 
+
+      {/* ── Guest / Login branch modal ── */}
+      {guestModalBikeId && (
+        <div className="auth-overlay" onClick={() => setGuestModalBikeId(null)}>
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(480px,100%)",
+              background: "#fff",
+              borderRadius: 20,
+              padding: "36px 32px 28px",
+              position: "relative",
+              boxShadow: "0 32px 90px rgba(0,0,0,.32)",
+              fontFamily: "'Be Vietnam Pro', Arial, sans-serif",
+            }}
+          >
+            <button
+              onClick={() => setGuestModalBikeId(null)}
+              style={{
+                position: "absolute", top: 14, right: 14,
+                border: 0, background: "#f3f4f6", borderRadius: "50%",
+                width: 32, height: 32, cursor: "pointer", fontSize: 15,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              ✕
+            </button>
+
+            <p style={{ margin: "0 0 6px", fontSize: 11, fontWeight: 800, letterSpacing: ".13em", color: "#f26522" }}>
+              TIẾN HÀNH ĐẶT XE
+            </p>
+            <h2 style={{ margin: "0 0 8px", fontSize: 24, fontWeight: 800, color: "#111", letterSpacing: "-.03em" }}>
+              Bạn muốn đặt xe như thế nào?
+            </h2>
+            <p style={{ margin: "0 0 24px", fontSize: 14, color: "#6b7280", lineHeight: 1.6 }}>
+              Chọn cách phù hợp — khách vãng lai không cần tài khoản, đặt ngay bây giờ.
+            </p>
+
+            {/* Option 1 — Guest */}
+            <button
+              onClick={() => { router.push(`/guest-checkout?vehicleId=${guestModalBikeId}`); setGuestModalBikeId(null); }}
+              style={{
+                width: "100%", padding: "18px 20px", marginBottom: 12,
+                background: "linear-gradient(135deg, #f26522, #ff8c42)",
+                border: "none", borderRadius: 14, cursor: "pointer",
+                display: "flex", alignItems: "center", gap: 14, textAlign: "left",
+              }}
+            >
+              <span style={{
+                width: 44, height: 44, background: "rgba(255,255,255,.2)",
+                borderRadius: 12, display: "flex", alignItems: "center",
+                justifyContent: "center", fontSize: 22, flexShrink: 0,
+              }}>⚡</span>
+              <div>
+                <div style={{ color: "#fff", fontWeight: 800, fontSize: 15 }}>Đặt nhanh — Không cần tài khoản</div>
+                <div style={{ color: "rgba(255,255,255,.78)", fontSize: 12, marginTop: 3 }}>
+                  Điền thông tin & upload giấy tờ trực tiếp. Nhanh — không cần đăng ký.
+                </div>
+              </div>
+            </button>
+
+            {/* Option 2 — Login */}
+            <button
+              onClick={() => { setAuthMode("login"); setGuestModalBikeId(null); }}
+              style={{
+                width: "100%", padding: "18px 20px",
+                background: "#f9fafb", border: "1.5px solid #e5e7eb",
+                borderRadius: 14, cursor: "pointer",
+                display: "flex", alignItems: "center", gap: 14, textAlign: "left",
+              }}
+            >
+              <span style={{
+                width: 44, height: 44, background: "#fff",
+                border: "1.5px solid #e5e7eb", borderRadius: 12,
+                display: "flex", alignItems: "center",
+                justifyContent: "center", fontSize: 22, flexShrink: 0,
+              }}>🔑</span>
+              <div>
+                <div style={{ color: "#111", fontWeight: 800, fontSize: 15 }}>Đăng nhập / Đăng ký tài khoản</div>
+                <div style={{ color: "#9ca3af", fontSize: 12, marginTop: 3 }}>
+                  Lưu lịch sử đơn, đặt lại dễ hơn, ưu đãi khách thành viên.
+                </div>
+              </div>
+            </button>
+
+            <p style={{ textAlign: "center", fontSize: 12, color: "#d1d5db", margin: "16px 0 0" }}>
+              Thông tin của bạn được bảo mật an toàn.
+            </p>
+          </div>
+        </div>
+      )}
+
       {authMode === "login" && <div className="auth-overlay"><form className="auth-modal" onSubmit={handleLogin}><button type="button" className="close" onClick={() => setAuthMode(null)}>✕</button><p className="eyebrow orange">ĐĂNG NHẬP</p><h2>Chào mừng bạn trở lại</h2><label>Email<input name="email" type="email" required placeholder="email@example.com" /></label><label>Mật khẩu<input name="password" type="password" required placeholder="Mật khẩu" /></label><button className="primary-button">Đăng nhập →</button><div className="auth-actions"><button type="button" onClick={() => setAuthMode("register")}>Chưa có tài khoản? Đăng ký</button><button type="button" onClick={() => setAuthMode("forgot")}>Quên mật khẩu?</button></div></form></div>}
+
 
 
 

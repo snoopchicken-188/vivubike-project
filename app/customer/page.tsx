@@ -18,7 +18,17 @@ import { auth, db } from "../../lib/firebase";
 
 type View = "overview" | "rent" | "bookings" | "verify" | "reviews" | "profile";
 type BookingStatus =
-  "Chờ xác nhận" | "Đã xác nhận" | "Đang thuê" | "Đã hoàn thành";
+  "Chờ xác nhận" | "Đã xác nhận" | "Đang thuê" | "Đã hoàn thành" | "Đã hủy";
+
+const mapStatus = (status: string): BookingStatus => {
+  const s = status.toLowerCase();
+  if (s === "pending" || s === "waiting_confirmation" || s === "pending_confirmation" || s === "chờ xác nhận") return "Chờ xác nhận";
+  if (s === "ready_for_pickup" || s === "confirmed" || s === "đã xác nhận") return "Đã xác nhận";
+  if (s === "in_progress" || s === "renting" || s === "đang thuê") return "Đang thuê";
+  if (s === "completed" || s === "đã hoàn thành") return "Đã hoàn thành";
+  if (s === "cancelled" || s === "đã hủy") return "Đã hủy";
+  return "Chờ xác nhận";
+};
 type DocumentKey = "cccdFront" | "cccdBack" | "driverLicense";
 
 type Bike = {
@@ -51,6 +61,13 @@ type Booking = {
   startDate: string;
   endDate: string;
   createdAt: unknown;
+  actualPickupAt?: string;
+  actualReturnAt?: string;
+  depositAmount?: number;
+  additionalFee?: number;
+  feeReason?: string;
+  licensePlate?: string;
+  totalAmount?: number;
 };
 
 const menu: { id: View; icon: string; label: string }[] = [
@@ -62,14 +79,13 @@ const menu: { id: View; icon: string; label: string }[] = [
   { id: "profile", icon: "◉", label: "Hồ sơ cá nhân" },
 ];
 
-const statusClass = (status: string) =>
-  status === "Đã hoàn thành"
-    ? "done"
-    : status === "Đang thuê"
-      ? "active"
-      : status === "Đã xác nhận"
-        ? "confirmed"
-        : "pending";
+const statusClass = (status: string) => {
+  if (status === "Đã hoàn thành") return "done";
+  if (status === "Đang thuê") return "active";
+  if (status === "Đã xác nhận") return "confirmed";
+  if (status === "Đã hủy") return "cancelled";
+  return "pending";
+};
 const initials = (name: string) =>
   name
     .split(" ")
@@ -85,12 +101,12 @@ const verificationLabel = (status: string) =>
   isVerified(status)
     ? "Đã xác minh"
     : status === "pending"
-        ? "Đang chờ Staff kiểm tra"
-        : status === "needs_update"
-          ? "Cần bổ sung hồ sơ"
-          : status === "rejected"
-            ? "Hồ sơ bị từ chối"
-            : "Chưa xác minh";
+      ? "Đang chờ Staff kiểm tra"
+      : status === "needs_update"
+        ? "Cần bổ sung hồ sơ"
+        : status === "rejected"
+          ? "Hồ sơ bị từ chối"
+          : "Chưa xác minh";
 
 export default function CustomerPage() {
   const [view, setView] = useState<View>("overview");
@@ -135,17 +151,17 @@ export default function CustomerPage() {
         const currentProfile = profile.exists()
           ? profile.data()
           : {
-              fullName: user.displayName || user.email || "Khách hàng",
-              email: user.email || "",
-              phone: "",
-              verificationStatus: "not_submitted",
-            };
+            fullName: user.displayName || user.email || "Khách hàng",
+            email: user.email || "",
+            phone: "",
+            verificationStatus: "not_submitted",
+          };
         setAccount({
           fullName: String(
             currentProfile.fullName ||
-              user.displayName ||
-              user.email ||
-              "Khách hàng",
+            user.displayName ||
+            user.email ||
+            "Khách hàng",
           ),
           email: String(currentProfile.email || user.email || ""),
           phone: String(currentProfile.phone || ""),
@@ -228,7 +244,7 @@ export default function CustomerPage() {
               dates: `${String(data.startDate || "")} — ${String(data.endDate || "")}`,
               location: String(data.pickupLocationName || ""),
               total: `${new Intl.NumberFormat("vi-VN").format(Number(data.totalAmount || 0))}đ`,
-              status: String(data.status || "Chờ xác nhận") as BookingStatus,
+              status: mapStatus(String(data.status || "Chờ xác nhận")),
               vehicleImage: String(data.vehicleImage || ""),
               dailyPrice: Number(data.dailyPrice || 0),
               rentalDays: Number(data.rentalDays || 0),
@@ -242,6 +258,13 @@ export default function CustomerPage() {
               startDate: String(data.startDate || ""),
               endDate: String(data.endDate || ""),
               createdAt: data.createdAt,
+              actualPickupAt: String(data.actualPickupAt || ""),
+              actualReturnAt: String(data.actualReturnAt || ""),
+              depositAmount: Number(data.depositAmount || 0),
+              additionalFee: Number(data.additionalFee || 0),
+              feeReason: String(data.feeReason || ""),
+              licensePlate: String(data.licensePlate || ""),
+              totalAmount: Number(data.totalAmount || 0),
             };
           }),
         );
@@ -288,31 +311,59 @@ export default function CustomerPage() {
     const form = new FormData(event.currentTarget);
     const fullName = String(form.get("fullName") || "").trim();
     const identityNumber = String(form.get("identityNumber") || "").trim();
+
     try {
-      const token = await user.getIdToken();
-      const response = await fetch("/api/verification-upload", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "Không thể tải hồ sơ.");
+      setVerificationSent(true);
+
+      const compressToBase64 = (file: File | null, maxWidth = 800, quality = 0.7): Promise<string> =>
+        new Promise((resolve, reject) => {
+          if (!file || file.size === 0) return resolve("");
+          const img = new Image();
+          const url = URL.createObjectURL(file);
+          img.onload = () => {
+            URL.revokeObjectURL(url);
+            const scale = maxWidth / Math.max(img.width, maxWidth);
+            const w = Math.round(img.width * scale);
+            const h = Math.round(img.height * scale);
+            const canvas = document.createElement("canvas");
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext("2d")!;
+            ctx.drawImage(img, 0, 0, w, h);
+            resolve(canvas.toDataURL("image/jpeg", quality));
+          };
+          img.onerror = () => reject(new Error("Lỗi khi đọc file ảnh."));
+          img.src = url;
+        });
+
+      const paths = {
+        cccdFront: await compressToBase64(form.get("cccdFront") as File),
+        cccdBack: await compressToBase64(form.get("cccdBack") as File),
+        driverLicense: await compressToBase64(form.get("driverLicense") as File),
+      };
+
+      if (!paths.cccdFront || !paths.cccdBack || !paths.driverLicense) {
+        throw new Error("Vui lòng tải lên đầy đủ các ảnh yêu cầu.");
+      }
+
       await updateDoc(doc(db, "users", user.uid), {
         fullName,
         identityNumber,
-        verificationDocuments: result.paths,
+        verificationDocuments: paths,
         verificationStatus: "pending",
         staffProposal: "Chưa có",
       });
+
       setAccount((current) => ({
         ...current,
         fullName,
         verificationStatus: "pending",
       }));
-      setVerificationSent(true);
-      notify("Đã gửi hồ sơ. Staff sẽ kiểm tra giấy tờ của bạn.");
+      notify("Đã gửi hồ sơ thành công. Hồ sơ của bạn đang được chờ phê duyệt.");
     } catch (error) {
-      notify(error instanceof Error ? error.message : "Không thể gửi hồ sơ.");
+      console.error("Lỗi xác minh hồ sơ:", error);
+      notify(error instanceof Error ? error.message : "Không thể tải hồ sơ, hãy thử lại.");
+      setVerificationSent(false);
     }
   };
 
@@ -336,16 +387,16 @@ export default function CustomerPage() {
     }
     const form = new FormData(event.currentTarget);
     const vehicleId = String(form.get("vehicleId") || "");
-    const locationId = String(form.get("locationId") || "");
     const startDate = String(form.get("startDate") || "");
     const endDate = String(form.get("endDate") || "");
     const bike = bikes.find((item) => item.id === vehicleId);
-    const location = locations.find((item) => item.id === locationId);
+    // Cơ sở duy nhất: lấy location đầu tiên từ Firestore hoặc dùng mặc định
+    const location = locations[0] || { id: "default", name: "Vi Vu Bike - Cơ sở chính" };
     const days = Math.ceil(
       (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000,
     );
-    if (!bike || !location || !startDate || !endDate || days < 1)
-      return notify("Hãy chọn xe, điểm nhận và ngày trả sau ngày nhận.");
+    if (!bike || !startDate || !endDate || days < 1)
+      return notify("Hãy chọn xe và ngày trả sau ngày nhận.");
     try {
       const code = `VVB-${Date.now().toString().slice(-6)}`;
       await addDoc(collection(db, "bookings"), {
@@ -461,6 +512,7 @@ export default function CustomerPage() {
             onChangeView={setView}
             fullName={account.fullName}
             verificationStatus={account.verificationStatus}
+            bookings={bookings}
           />
         )}
         {view === "rent" && (
@@ -880,6 +932,10 @@ export default function CustomerPage() {
           background: #edf0f2;
           color: #5b6268;
         }
+        .tag.cancelled {
+          background: #f1f3f5;
+          color: #dc3545;
+        }
         .quick-actions {
           display: grid;
           gap: 18px;
@@ -963,20 +1019,102 @@ export default function CustomerPage() {
           color: #e95c20;
           font-size: 14px;
         }
-        .table-filters {
+        .booking-stepper-container {
           display: flex;
-          gap: 8px;
-        }
-        .table-filters button {
+          align-items: center;
+          gap: 24px;
           background: #fff;
-          border: 1px solid #ddd;
-          font-size: 12px;
-          padding: 9px 12px;
+          padding: 16px 24px;
+          border: 1px solid #e4e7e9;
+          margin-bottom: 24px;
+          overflow-x: auto;
         }
-        .table-filters button.active {
-          background: #171717;
-          border-color: #171717;
+        .all-btn {
+          background: #f1f3f4;
+          border: 1px solid #ddd;
+          padding: 8px 16px;
+          border-radius: 4px;
+          font-weight: 600;
+          font-size: 13px;
+          color: #555;
+          cursor: pointer;
+          white-space: nowrap;
+          transition: all 0.2s;
+        }
+        .all-btn.active, .all-btn:hover {
+          background: #ea580c;
+          border-color: #ea580c;
           color: #fff;
+        }
+        .stepper-wrapper {
+          display: flex;
+          align-items: flex-start;
+          flex: 1;
+          min-width: 500px;
+        }
+        .stepper-step {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          cursor: pointer;
+          position: relative;
+        }
+        .step-node {
+          display: flex;
+          align-items: center;
+          margin-bottom: 8px;
+        }
+        .step-circle {
+          width: 28px;
+          height: 28px;
+          border-radius: 50%;
+          background: #f3f4f6;
+          border: 2px solid #d1d5db;
+          color: #6b7280;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          font-weight: 700;
+          z-index: 2;
+          transition: all 0.2s;
+        }
+        .step-line {
+          flex: 1;
+          height: 2px;
+          background: #e5e7eb;
+          margin: 0 8px;
+          transition: all 0.2s;
+        }
+        .stepper-step.active .step-circle {
+          background: #ea580c;
+          border-color: #ea580c;
+          color: #fff;
+          box-shadow: 0 0 0 4px rgba(234, 88, 12, 0.15);
+        }
+        .stepper-step.active .step-line {
+          background: #ea580c;
+        }
+        .stepper-step:hover .step-circle {
+          background: #fed7aa;
+          color: #ea580c;
+          border-color: #ea580c;
+        }
+        .step-label {
+          font-size: 13px;
+          color: #6b7280;
+          font-weight: 500;
+          transition: all 0.2s;
+          white-space: nowrap;
+        }
+        .stepper-step.active .step-label {
+          color: #ea580c;
+          font-weight: 800;
+        }
+        .step-count {
+          font-size: 11px;
+          color: #9ca3af;
+          margin-left: 4px;
         }
         .booking-table {
           width: 100%;
@@ -1042,6 +1180,7 @@ export default function CustomerPage() {
           gap: 7px;
           font-size: 12px;
           font-weight: 800;
+          align-content: start;
         }
         .field input {
           border: 1px solid #ddd;
@@ -1186,6 +1325,46 @@ export default function CustomerPage() {
         .profile-form .form-grid {
           margin-bottom: 20px;
         }
+        .bill-modal { max-width: 680px; padding: 0; overflow: hidden; }
+        .bill-wrap { background: #fff; padding: 32px 36px; }
+        .bill-header { display: flex; align-items: flex-start; justify-content: space-between; border-bottom: 3px solid #f26522; padding-bottom: 20px; margin-bottom: 22px; gap: 16px; flex-wrap: wrap; }
+        .bill-logo { display: flex; align-items: center; gap: 12px; }
+        .bill-logo-mark { align-items: center; background: #f26522; clip-path: polygon(50% 0,100% 18%,82% 100%,18% 100%,0 18%); color: #fff; display: flex; font-size: 16px; font-weight: 900; height: 44px; justify-content: center; width: 44px; flex-shrink: 0; }
+        .bill-brand { font-size: 18px; font-weight: 900; letter-spacing: .06em; color: #151718; }
+        .bill-brand b { color: #f26522; }
+        .bill-brand-sub { font-size: 11px; color: #888; margin-top: 2px; }
+        .bill-title-block { text-align: right; }
+        .bill-title { font-size: 14px; font-weight: 800; letter-spacing: .06em; color: #151718; margin: 0 0 8px; text-transform: uppercase; }
+        .bill-meta { display: flex; flex-direction: column; gap: 3px; }
+        .bill-meta span { font-size: 12px; color: #666; }
+        .bill-meta b { color: #171717; }
+        .bill-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 22px; }
+        .bill-section-label { color: #f26522; font-size: 10px; font-weight: 800; letter-spacing: .12em; margin: 0 0 10px; text-transform: uppercase; }
+        .bill-info-line { display: flex; justify-content: space-between; font-size: 13px; margin: 0 0 6px; gap: 8px; }
+        .bill-info-line span { color: #888; flex-shrink: 0; }
+        .bill-info-line b { text-align: right; }
+        .bill-table { border-collapse: collapse; width: 100%; margin-bottom: 0; font-size: 13px; }
+        .bill-table thead tr { background: #f8f8f8; border-bottom: 2px solid #eee; }
+        .bill-table th { font-size: 11px; font-weight: 800; letter-spacing: .08em; padding: 10px 14px; text-align: left; color: #555; text-transform: uppercase; }
+        .bill-table td { padding: 11px 14px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }
+        .bill-amount { text-align: right; font-weight: 700; white-space: nowrap; }
+        .bill-row-deduct td { color: #15834b; }
+        .bill-row-penalty td { color: #c55720; font-weight: 700; }
+        .bill-row-reason td { color: #888; font-size: 12px; padding-top: 2px; padding-bottom: 10px; border-bottom: 1px solid #f0f0f0; }
+        .bill-grand { background: #f26522; color: #fff; display: flex; align-items: center; justify-content: space-between; padding: 18px 24px; margin-top: 0; }
+        .bill-grand span { font-size: 12px; font-weight: 800; letter-spacing: .06em; opacity: .92; text-transform: uppercase; }
+        .bill-grand b { font-size: 26px; font-weight: 900; letter-spacing: -.02em; }
+        .bill-grand.refund, .bill-grand.completed { background: #15834b; }
+        .bill-footer { text-align: center; padding: 18px 0 4px; border-top: 1px dashed #ddd; margin-top: 18px; }
+        .bill-footer p { margin: 0 0 4px; font-size: 13px; color: #555; }
+        .bill-footer-sub { font-size: 11px; color: #aaa !important; }
+        .bill-actions { display: flex; gap: 10px; justify-content: flex-end; padding: 16px 24px; background: #fafafa; border-top: 1px solid #eee; flex-wrap: wrap; }
+        @media print {
+          .booking-modal-backdrop { position: static; background: none; padding: 0; }
+          .bill-modal { box-shadow: none; max-width: 100%; }
+          .bill-actions { display: none; }
+          body *:not(.bill-modal):not(.bill-modal *) { display: none; }
+        }
         .toast {
           background: #171717;
           box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
@@ -1281,8 +1460,7 @@ export default function CustomerPage() {
             flex-direction: column;
             gap: 15px;
           }
-          .table-filters {
-            overflow: auto;
+          .booking-stepper-container {
             width: 100%;
           }
           .booking-table {
@@ -1690,12 +1868,27 @@ function Overview({
   onChangeView,
   fullName,
   verificationStatus,
+  bookings,
 }: {
   onChangeView: (view: View) => void;
   fullName: string;
   verificationStatus: string;
+  bookings: Booking[];
 }) {
   const verified = isVerified(verificationStatus);
+
+  const pendingCount = bookings.filter((b) => b.status === "Chờ xác nhận").length;
+  const completedCount = bookings.filter((b) => b.status === "Đã hoàn thành").length;
+
+  const getTimestamp = (value: unknown) => {
+    const timestamp = value as { toDate?: () => Date } | undefined;
+    const date = value instanceof Date ? value : typeof timestamp?.toDate === "function" ? timestamp.toDate() : null;
+    return date ? date.getTime() : 0;
+  };
+
+  const sortedBookings = [...bookings].sort((a, b) => getTimestamp(b.createdAt) - getTimestamp(a.createdAt));
+  const latestBooking = sortedBookings.length > 0 ? sortedBookings[0] : null;
+
   return (
     <div className="page">
       {!verified && (
@@ -1713,19 +1906,19 @@ function Overview({
       <div className="overview-title">
         <h2>Chào {fullName},</h2>
         <p>
-          Các số liệu dưới đây sẽ được cập nhật khi bạn có đơn thuê thực tế.
+          Các số liệu dưới đây được cập nhật dựa trên đơn thuê thực tế của bạn.
         </p>
       </div>
       <div className="stats">
         <article className="stat">
-          <p>Đơn đang chờ</p>
-          <b>0</b>
-          <span>Chưa có dữ liệu đơn thuê</span>
+          <p>Đơn chờ xác nhận</p>
+          <b>{pendingCount}</b>
+          <span>{pendingCount > 0 ? `Có ${pendingCount} đơn đang chờ xác nhận` : "Chưa có dữ liệu đơn thuê"}</span>
         </article>
         <article className="stat">
           <p>Lượt thuê hoàn thành</p>
-          <b>0</b>
-          <span>Chưa có lượt thuê hoàn thành</span>
+          <b>{completedCount}</b>
+          <span>{completedCount > 0 ? `Đã hoàn thành ${completedCount} lượt thuê` : "Chưa có lượt thuê hoàn thành"}</span>
         </article>
         <article className="stat">
           <p>Trạng thái tài khoản</p>
@@ -1744,18 +1937,37 @@ function Overview({
             Xem đơn thuê →
           </button>
         </div>
-        <div className="booking-preview">
-          <div className="bike-round">
-            <span>⌁</span>
+        {latestBooking ? (
+          <div className="booking-preview" style={{ cursor: 'pointer' }} onClick={() => onChangeView("bookings")}>
+            <div className="bike-round" style={{ overflow: 'hidden', padding: 0 }}>
+              {latestBooking.vehicleImage ? (
+                <img src={latestBooking.vehicleImage} alt={latestBooking.bike} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : (
+                <span>⌁</span>
+              )}
+            </div>
+            <div style={{ flex: 1 }}>
+              <b>{latestBooking.bike}</b>
+              <small>{latestBooking.dates} · {latestBooking.location}</small>
+            </div>
+            <span className={`tag ${statusClass(latestBooking.status)}`}>
+              {latestBooking.status}
+            </span>
           </div>
-          <div>
-            <b>Bạn chưa có đơn thuê nào</b>
-            <small>Chọn xe để gửi yêu cầu thuê đầu tiên của bạn.</small>
+        ) : (
+          <div className="booking-preview">
+            <div className="bike-round">
+              <span>⌁</span>
+            </div>
+            <div>
+              <b>Bạn chưa có đơn thuê nào</b>
+              <small>Chọn xe để gửi yêu cầu thuê đầu tiên của bạn.</small>
+            </div>
+            <button className="button light" onClick={() => onChangeView("rent")}>
+              Xem xe cho thuê
+            </button>
           </div>
-          <button className="button light" onClick={() => onChangeView("rent")}>
-            Xem xe cho thuê
-          </button>
-        </div>
+        )}
       </section>
       <section className="panel">
         <div className="panel-head">
@@ -1792,25 +2004,35 @@ function Rent({
   verified: boolean;
   onBooking: (event: FormEvent<HTMLFormElement>) => Promise<void>;
 }) {
-  const [locationId, setLocationId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [note, setNote] = useState("");
   const selectedBike = bikes.find((bike) => bike.id === selectedBikeId);
+  const defaultLocation = locations[0] || { id: "default", name: "Vi Vu Bike - Cơ sở chính" };
   const money = (value: number) =>
     `${new Intl.NumberFormat("vi-VN").format(value)}đ/ngày`;
   const days =
     startDate && endDate
       ? Math.max(
-          0,
-          Math.ceil(
-            (new Date(endDate).getTime() - new Date(startDate).getTime()) /
-              86400000,
-          ),
-        )
+        0,
+        Math.ceil(
+          (new Date(endDate).getTime() - new Date(startDate).getTime()) /
+          86400000,
+        ),
+      )
       : 0;
   const total = selectedBike ? days * selectedBike.price : 0;
   const today = new Date().toISOString().slice(0, 10);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && selectedBikeId) {
+        setSelectedBikeId("");
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedBikeId, setSelectedBikeId]);
 
   return (
     <div className="page">
@@ -1859,131 +2081,153 @@ function Rent({
         </div>
       )}
       {selectedBike && (
-        <section className="rental-checkout">
-          <form className="rental-form" onSubmit={onBooking}>
-            <div className="rental-form-head">
-              <p>PHIẾU YÊU CẦU THUÊ</p>
-              <h2>Hoàn tất thông tin nhận xe</h2>
-              <span>
-                Đơn sẽ ở trạng thái <b>Chờ xác nhận</b> cho đến khi Staff xử lý.
-              </span>
-            </div>
-            <input type="hidden" name="vehicleId" value={selectedBike.id} />
-
-            <div className="rental-fields">
-              <label className="field wide">
-                Xe đã chọn
-                <input
-                  value={`${selectedBike.name} · ${money(selectedBike.price)}`}
-                  readOnly
-                />
-              </label>
-              <label className="field wide">
-                Điểm nhận xe
-                <select
-                  name="locationId"
-                  required
-                  value={locationId}
-                  onChange={(event) => setLocationId(event.target.value)}
-                >
-                  <option value="" disabled>
-                    Chọn địa điểm nhận xe
-                  </option>
-                  {locations.map((location) => (
-                    <option key={location.id} value={location.id}>
-                      {location.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field">
-                Ngày nhận xe
-                <input
-                  name="startDate"
-                  type="date"
-                  min={today}
-                  required
-                  value={startDate}
-                  onChange={(event) => setStartDate(event.target.value)}
-                />
-              </label>
-              <label className="field">
-                Ngày trả xe
-                <input
-                  name="endDate"
-                  type="date"
-                  min={startDate || today}
-                  required
-                  value={endDate}
-                  onChange={(event) => setEndDate(event.target.value)}
-                />
-              </label>
-              <label className="field wide">
-                Ghi chú cho Staff <span>(không bắt buộc)</span>
-                <textarea
-                  name="note"
-                  value={note}
-                  onChange={(event) => setNote(event.target.value)}
-                  placeholder="Ví dụ: thời gian dự kiến đến nhận xe"
-                />
-              </label>
-            </div>
-
-            <div className="rental-actions">
-              <button className="button" disabled={!verified}>
-                {verified ? "Gửi yêu cầu thuê xe" : "Cần xác minh tài khoản"}
-              </button>
-              <button
-                type="button"
-                className="text-button cancel-choice"
-                onClick={() => setSelectedBikeId("")}
-              >
-                Bỏ chọn xe
-              </button>
-            </div>
-          </form>
-
-          <aside className="rental-summary">
-            <p>TÓM TẮT ĐƠN THUÊ</p>
-            <div className="rental-bike">
-              {selectedBike.image ? (
-                <img src={selectedBike.image} alt={selectedBike.name} />
-              ) : (
-                <span>⌁</span>
-              )}
-              <div>
-                <small>{selectedBike.type}</small>
-                <b>{selectedBike.name}</b>
-                <strong>{money(selectedBike.price)}</strong>
+        <div
+          className="booking-modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelectedBikeId("");
+          }}
+          style={{ zIndex: 1000 }}
+        >
+          <section
+            className="rental-checkout"
+            role="dialog"
+            aria-modal="true"
+            style={{
+              position: "relative",
+              maxWidth: "900px",
+              width: "100%",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              margin: "auto",
+              borderRadius: "12px",
+            }}
+          >
+            <button
+              type="button"
+              className="modal-close"
+              onClick={() => setSelectedBikeId("")}
+              aria-label="Đóng"
+              style={{
+                position: "absolute",
+                top: "16px",
+                right: "16px",
+                zIndex: 10,
+              }}
+            >
+              ✕
+            </button>
+            <form className="rental-form" onSubmit={onBooking}>
+              <div className="rental-form-head">
+                <p>PHIẾU YÊU CẦU THUÊ</p>
+                <h2>Hoàn tất thông tin nhận xe</h2>
+                <span>
+                  Đơn sẽ ở trạng thái <b>Chờ xác nhận</b> cho đến khi Staff xử lý.
+                </span>
               </div>
-            </div>
-            <div className="summary-line">
-              <span>Thời gian thuê</span>
-              <b>{days ? `${days} ngày` : "Chưa chọn ngày"}</b>
-            </div>
-            <div className="summary-line">
-              <span>Điểm nhận</span>
-              <b>
-                {locations.find((location) => location.id === locationId)?.name ||
-                  "Chưa chọn địa điểm"}
-              </b>
-            </div>
-            <div className="summary-total">
-              <span>Tổng tiền tạm tính</span>
-              <b>
-                {days
-                  ? `${new Intl.NumberFormat("vi-VN").format(total)}đ`
-                  : "—"}
-              </b>
-              <small>Giá chính thức được xác nhận trước khi giao xe.</small>
-            </div>
-            <div className="summary-included">
-              <b>Đi kèm trong đơn</b>
-              <span>✓ 02 mũ bảo hiểm</span>
-              <span>✓ 01 áo mưa</span>
-            </div>
-          </aside>
-        </section>
+              <input type="hidden" name="vehicleId" value={selectedBike.id} />
+
+              <div className="rental-fields">
+                <label className="field wide">
+                  Xe đã chọn
+                  <input
+                    value={`${selectedBike.name} · ${money(selectedBike.price)}`}
+                    readOnly
+                  />
+                </label>
+                <label className="field wide">
+                  Địa điểm nhận xe
+                  <input
+                    value={defaultLocation.name}
+                    readOnly
+                    style={{ background: "#f5f5f5", color: "#555", cursor: "default" }}
+                  />
+                </label>
+                <label className="field">
+                  Ngày nhận xe
+                  <input
+                    name="startDate"
+                    type="date"
+                    min={today}
+                    required
+                    value={startDate}
+                    onChange={(event) => setStartDate(event.target.value)}
+                  />
+                </label>
+                <label className="field">
+                  Ngày trả xe
+                  <input
+                    name="endDate"
+                    type="date"
+                    min={startDate || today}
+                    required
+                    value={endDate}
+                    onChange={(event) => setEndDate(event.target.value)}
+                  />
+                </label>
+                <label className="field wide">
+                  Ghi chú cho Staff <span>(không bắt buộc)</span>
+                  <textarea
+                    name="note"
+                    value={note}
+                    onChange={(event) => setNote(event.target.value)}
+                    placeholder="Ví dụ: thời gian dự kiến đến nhận xe"
+                  />
+                </label>
+              </div>
+
+              <div className="rental-actions">
+                <button className="button" disabled={!verified}>
+                  {verified ? "Gửi yêu cầu thuê xe" : "Cần xác minh tài khoản"}
+                </button>
+                <button
+                  type="button"
+                  className="text-button cancel-choice"
+                  onClick={() => setSelectedBikeId("")}
+                >
+                  Bỏ chọn xe
+                </button>
+              </div>
+            </form>
+
+            <aside className="rental-summary">
+              <p>TÓM TẮT ĐƠN THUÊ</p>
+              <div className="rental-bike">
+                {selectedBike.image ? (
+                  <img src={selectedBike.image} alt={selectedBike.name} />
+                ) : (
+                  <span>⌁</span>
+                )}
+                <div>
+                  <small>{selectedBike.type}</small>
+                  <b>{selectedBike.name}</b>
+                  <strong>{money(selectedBike.price)}</strong>
+                </div>
+              </div>
+              <div className="summary-line">
+                <span>Thời gian thuê</span>
+                <b>{days ? `${days} ngày` : "Chưa chọn ngày"}</b>
+              </div>
+              <div className="summary-line">
+                <span>Điểm nhận</span>
+                <b>{defaultLocation.name}</b>
+              </div>
+              <div className="summary-total">
+                <span>Tổng tiền tạm tính</span>
+                <b>
+                  {days
+                    ? `${new Intl.NumberFormat("vi-VN").format(total)}đ`
+                    : "—"}
+                </b>
+                <small>Giá chính thức được xác nhận trước khi giao xe.</small>
+              </div>
+              <div className="summary-included">
+                <b>Đi kèm trong đơn</b>
+                <span>✓ 02 mũ bảo hiểm</span>
+                <span>✓ 01 áo mưa</span>
+              </div>
+            </aside>
+          </section>
+        </div>
       )}
       <section className="panel">
         <div className="panel-head">
@@ -2034,16 +2278,37 @@ function Bookings({
           <h2>Đơn thuê của tôi</h2>
           <p>Theo dõi trạng thái và thông tin nhận/trả xe.</p>
         </div>
-        <div className="table-filters">
-          {filters.map((item) => (
-            <button
-              className={filter === item ? "active" : ""}
-              key={item}
-              onClick={() => setFilter(item)}
-            >
-              {item}
-            </button>
-          ))}
+      </div>
+      <div className="booking-stepper-container">
+        <button
+          className={`all-btn ${filter === "Tất cả" ? "active" : ""}`}
+          onClick={() => setFilter("Tất cả")}
+        >
+          Tất cả
+        </button>
+        <div className="stepper-wrapper">
+          {["Chờ xác nhận", "Đã xác nhận", "Đang thuê", "Đã hoàn thành"].map((stepName, idx) => {
+            const stepNum = idx + 1;
+            const isActive = filter === stepName;
+            // Get count for this step
+            const count = data.filter((d) => d.status === stepName).length;
+
+            return (
+              <div
+                key={stepName}
+                className={`stepper-step ${isActive ? "active" : ""}`}
+                onClick={() => setFilter(stepName)}
+              >
+                <div className="step-node">
+                  <div className="step-circle">{stepNum}</div>
+                  {idx < 3 && <div className="step-line" />}
+                </div>
+                <div className="step-label">
+                  {stepName} {count > 0 && <span className="step-count">({count})</span>}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
       <section className="panel">
@@ -2110,10 +2375,10 @@ function BookingDetail({
     return Number.isNaN(date.getTime())
       ? value
       : new Intl.DateTimeFormat("vi-VN", {
-          day: "2-digit",
-          month: "2-digit",
-          year: "numeric",
-        }).format(date);
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+      }).format(date);
   };
   const createdAtText = (value: unknown) => {
     const timestamp = value as { toDate?: () => Date } | undefined;
@@ -2125,14 +2390,48 @@ function BookingDetail({
           : null;
     return date
       ? new Intl.DateTimeFormat("vi-VN", {
-          day: "2-digit",
-          month: "2-digit",
-          year: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-        }).format(date)
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(date)
       : "Đơn vừa được tạo";
   };
+
+  const fmtDT = (d?: string | Date) => {
+    if (!d) return "—";
+    const date = new Date(d);
+    if (Number.isNaN(date.getTime())) return String(d);
+    return new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+  };
+  const duration = (start?: string | Date, end?: string | Date) => {
+    if (!start || !end) return "";
+    const ms = new Date(end).getTime() - new Date(start).getTime();
+    if (ms <= 0) return "";
+    const h = Math.floor(ms / 3600000);
+    const d = Math.floor(h / 24);
+    return d > 0 ? `(${d} ngày ${h % 24} giờ)` : `(${h} giờ)`;
+  };
+  const lateMinutes = (plannedReturn?: string | Date, actual?: string | Date) => {
+    if (!plannedReturn) return 0;
+    const a = actual ? new Date(actual) : new Date();
+    const p = new Date(plannedReturn);
+    return Math.floor((a.getTime() - p.getTime()) / 60000);
+  };
+  const lateText = (minutes: number) => {
+    if (minutes <= 0) return "";
+    const d = Math.floor(minutes / 1440);
+    const h = Math.floor((minutes % 1440) / 60);
+    const m = minutes % 60;
+    let s = "Quá hạn ";
+    if (d > 0) s += `${d} ngày `;
+    if (h > 0) s += `${h} giờ `;
+    if (m > 0 && d === 0) s += `${m} phút`;
+    return s.trim();
+  };
+
+  const isCompleted = booking.status === "Đã hoàn thành";
 
   return (
     <div
@@ -2141,80 +2440,174 @@ function BookingDetail({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <section className="booking-modal" role="dialog" aria-modal="true">
-        <button className="modal-close" onClick={onClose} aria-label="Đóng">
-          ✕
-        </button>
-        <div className="modal-title">
-          <div>
-            <p>CHI TIẾT ĐƠN THUÊ</p>
-            <h2>{booking.code}</h2>
-            <small>Tạo lúc {createdAtText(booking.createdAt)}</small>
+      {isCompleted ? (
+        <section className="modal bill-modal" role="dialog" aria-modal="true" style={{ maxWidth: '680px', padding: 0, overflow: 'hidden', backgroundColor: '#fff', width: '100%', position: 'relative' }}>
+          <div className="bill-wrap" id="bill-print-area" style={{ padding: '32px 36px' }}>
+            <div className="bill-header">
+              <div className="bill-logo">
+                <span className="bill-logo-mark">V</span>
+                <div>
+                  <div className="bill-brand">VI VU <b>BIKE</b></div>
+                  <div className="bill-brand-sub">Dịch vụ cho thuê xe máy</div>
+                </div>
+              </div>
+              <div className="bill-title-block">
+                <h2 className="bill-title">HÓA ĐƠN QUYẾT TOÁN THUÊ XE</h2>
+                <div className="bill-meta">
+                  <span>Mã phiếu: <b>{booking.code}</b></span>
+                  <span>Ngày: <b>{createdAtText(new Date())}</b></span>
+                </div>
+              </div>
+            </div>
+
+            <div className="bill-info-grid">
+              <div className="bill-info-col">
+                <p className="bill-section-label">THÔNG TIN KHÁCH HÀNG</p>
+                <p className="bill-info-line"><span>Họ tên:</span><b>{booking.customerName}</b></p>
+                <p className="bill-info-line"><span>Liên hệ:</span><b>{booking.customerPhone || booking.customerEmail}</b></p>
+              </div>
+              <div className="bill-info-col">
+                <p className="bill-section-label">THÔNG TIN XE THUÊ</p>
+                <p className="bill-info-line"><span>Dòng xe:</span><b>{booking.bike}</b></p>
+                {booking.licensePlate && <p className="bill-info-line"><span>Biển số:</span><b>{booking.licensePlate}</b></p>}
+                <p className="bill-info-line"><span>Nhận xe:</span><b>{fmtDT(booking.actualPickupAt || booking.startDate)}</b></p>
+                <p className="bill-info-line"><span>Hẹn trả:</span><b>{fmtDT(booking.endDate)}</b></p>
+                <p className="bill-info-line"><span>Trả thực tế:</span><b style={{ color: (() => { const late = lateMinutes(booking.endDate, booking.actualReturnAt); return late > 0 ? "#c55720" : "#15834b"; })() }}>{fmtDT(booking.actualReturnAt)}</b></p>
+                {(() => { const late = lateMinutes(booking.endDate, booking.actualReturnAt); return (late > 0) ? <p className="bill-info-line"><span style={{ color: "#c55720", fontWeight: 700 }}>{lateText(late)}</span><b style={{ color: "#c55720" }}>! Phụ phí</b></p> : null; })()}
+                {duration(booking.actualPickupAt || booking.startDate, booking.actualReturnAt) && <p className="bill-info-line"><span>Thời lượng:</span><b>{duration(booking.actualPickupAt || booking.startDate, booking.actualReturnAt).replace(/[()]/g, "")}</b></p>}
+              </div>
+            </div>
+
+            <table className="bill-table">
+              <thead>
+                <tr><th>Diễn giải</th><th style={{ textAlign: "right" }}>Số tiền</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Tiền thuê xe ({booking.bike})</td>
+                  <td className="bill-amount">{money(booking.totalAmount || booking.dailyPrice * booking.rentalDays)}</td>
+                </tr>
+                {(booking.depositAmount || 0) > 0 && (
+                  <tr className="bill-row-deduct">
+                    <td>Tiền cọc ban đầu (giảm trừ)</td>
+                    <td className="bill-amount">- {money(booking.depositAmount || 0)}</td>
+                  </tr>
+                )}
+                {(booking.additionalFee || 0) > 0 && (
+                  <>
+                    <tr className="bill-row-penalty">
+                      <td>Phụ phí phát sinh</td>
+                      <td className="bill-amount">+ {money(booking.additionalFee || 0)}</td>
+                    </tr>
+                    {booking.feeReason && (
+                      <tr className="bill-row-reason">
+                        <td colSpan={2}><i>└ Lý do: {booking.feeReason}</i></td>
+                      </tr>
+                    )}
+                  </>
+                )}
+              </tbody>
+            </table>
+
+            {(() => {
+              const base = booking.totalAmount || (booking.dailyPrice * booking.rentalDays);
+              const grand = base + (booking.additionalFee || 0) - (booking.depositAmount || 0);
+              const isRefund = grand < 0;
+              return (
+                <div className={`bill-grand${isRefund ? " refund" : ""} completed`}>
+                  <span>ĐÃ QUYẾT TOÁN</span>
+                  <b>{money(Math.abs(grand))}</b>
+                </div>
+              );
+            })()}
+
+            <div className="bill-footer">
+              <p>Cảm ơn quý khách đã sử dụng dịch vụ <b>Vi Vu Bike</b>!</p>
+              <p className="bill-footer-sub">Hồ sơ và chi tiết thuê xe được lưu trữ trong hệ thống.</p>
+            </div>
           </div>
-          <span className={`tag ${statusClass(booking.status)}`}>
-            {booking.status}
-          </span>
-        </div>
 
-        <div className="modal-bike">
-          {booking.vehicleImage ? (
-            <img src={booking.vehicleImage} alt={booking.bike} />
-          ) : (
-            <span>⌁</span>
-          )}
-          <div>
-            <small>XE ĐÃ ĐẶT</small>
-            <h3>{booking.bike}</h3>
-            <p>{booking.dailyPrice ? `${money(booking.dailyPrice)}/ngày` : "Giá thuê được Staff xác nhận"}</p>
+          <div className="bill-actions">
+            <button className="button light" onClick={() => window.print()} style={{ marginRight: '10px' }}>🖨 In hóa đơn</button>
+            <button className="button" onClick={onClose}>Đóng</button>
           </div>
-        </div>
-
-        <div className="detail-grid">
-          <article>
-            <span>Thời gian thuê</span>
-            <b>
-              {dateText(booking.startDate)} — {dateText(booking.endDate)}
-            </b>
-            <small>{booking.rentalDays ? `${booking.rentalDays} ngày thuê` : "Đang chờ xác nhận"}</small>
-          </article>
-          <article>
-            <span>Điểm nhận xe</span>
-            <b>{booking.location || "Đang cập nhật"}</b>
-            <small>Staff sẽ xác nhận thời gian nhận xe</small>
-          </article>
-          <article>
-            <span>Khách thuê</span>
-            <b>{booking.customerName || "Khách hàng"}</b>
-            <small>{booking.customerPhone || booking.customerEmail || "Thông tin trong hồ sơ"}</small>
-          </article>
-          <article>
-            <span>Tổng tiền dự kiến</span>
-            <b>{booking.total}</b>
-            <small>Chưa bao gồm phát sinh (nếu có)</small>
-          </article>
-        </div>
-
-        <div className="detail-note">
-          <b>Ghi chú cho Staff</b>
-          <p>{booking.note || "Khách hàng chưa để lại ghi chú."}</p>
-        </div>
-
-        <div className="detail-included">
-          <b>Phụ kiện đi kèm</b>
-          <div>
-            {(booking.amenities.length
-              ? booking.amenities
-              : ["02 mũ bảo hiểm", "01 áo mưa"]
-            ).map((amenity) => (
-              <span key={amenity}>✓ {amenity}</span>
-            ))}
+        </section>
+      ) : (
+        <section className="booking-modal" role="dialog" aria-modal="true">
+          <button className="modal-close" onClick={onClose} aria-label="Đóng">
+            ✕
+          </button>
+          <div className="modal-title">
+            <div>
+              <p>CHI TIẾT ĐƠN THUÊ</p>
+              <h2>{booking.code}</h2>
+              <small>Tạo lúc {createdAtText(booking.createdAt)}</small>
+            </div>
+            <span className={`tag ${statusClass(booking.status)}`}>
+              {booking.status}
+            </span>
           </div>
-        </div>
 
-        <button className="button modal-button" onClick={onClose}>
-          Đã hiểu
-        </button>
-      </section>
+          <div className="modal-bike">
+            {booking.vehicleImage ? (
+              <img src={booking.vehicleImage} alt={booking.bike} />
+            ) : (
+              <span>⌁</span>
+            )}
+            <div>
+              <small>XE ĐÃ ĐẶT</small>
+              <h3>{booking.bike}</h3>
+              <p>{booking.dailyPrice ? `${money(booking.dailyPrice)}/ngày` : "Giá thuê được Staff xác nhận"}</p>
+            </div>
+          </div>
+
+          <div className="detail-grid">
+            <article>
+              <span>Thời gian thuê</span>
+              <b>
+                {dateText(booking.startDate)} — {dateText(booking.endDate)}
+              </b>
+              <small>{booking.rentalDays ? `${booking.rentalDays} ngày thuê` : "Đang chờ xác nhận"}</small>
+            </article>
+            <article>
+              <span>Điểm nhận xe</span>
+              <b>{booking.location || "Đang cập nhật"}</b>
+              <small>Staff sẽ xác nhận thời gian nhận xe</small>
+            </article>
+            <article>
+              <span>Khách thuê</span>
+              <b>{booking.customerName || "Khách hàng"}</b>
+              <small>{booking.customerPhone || booking.customerEmail || "Thông tin trong hồ sơ"}</small>
+            </article>
+            <article>
+              <span>Tổng tiền dự kiến</span>
+              <b>{booking.total}</b>
+              <small>Chưa bao gồm phát sinh (nếu có)</small>
+            </article>
+          </div>
+
+          <div className="detail-note">
+            <b>Ghi chú cho Staff</b>
+            <p>{booking.note || "Khách hàng chưa để lại ghi chú."}</p>
+          </div>
+
+          <div className="detail-included">
+            <b>Phụ kiện đi kèm</b>
+            <div>
+              {(booking.amenities.length
+                ? booking.amenities
+                : ["02 mũ bảo hiểm", "01 áo mưa"]
+              ).map((amenity) => (
+                <span key={amenity}>✓ {amenity}</span>
+              ))}
+            </div>
+          </div>
+
+          <button className="button modal-button" onClick={onClose}>
+            Đã hiểu
+          </button>
+        </section>
+      )}
     </div>
   );
 }
@@ -2424,10 +2817,10 @@ function Profile({
       </div>
       <form className="profile-form" onSubmit={onSubmit}>
         <h2>Thông tin cơ bản</h2>
-        <div className="form-grid">
+        <div className="form-grid" style={{ alignItems: "start" }}>
           <label className="field">
             Họ và tên
-            <input defaultValue={fullName} required />
+            <input defaultValue={fullName} required style={{ height: "43px" }} />
           </label>
           <label className="field">
             Số điện thoại
@@ -2435,15 +2828,30 @@ function Profile({
               defaultValue={phone}
               required
               placeholder="Nhập số điện thoại"
+              style={{ height: "43px" }}
             />
           </label>
           <label className="field">
             Email
-            <input defaultValue={email} type="email" required />
+            <input 
+              defaultValue={email} 
+              type="email" 
+              readOnly 
+              name="email"
+              style={{
+                height: "43px",
+                backgroundColor: '#f3f4f6',
+                color: '#6b7280',
+                borderColor: '#e5e7eb',
+                cursor: 'not-allowed',
+                outline: 'none'
+              }}
+            />
+            <small style={{ color: '#6b7280', fontWeight: 500, fontSize: '11px', marginTop: '2px' }}>Email đăng ký tài khoản không thể thay đổi</small>
           </label>
           <label className="field">
             Địa chỉ
-            <input placeholder="Nhập địa chỉ của bạn" />
+            <input placeholder="Nhập địa chỉ của bạn" style={{ height: "43px" }} />
           </label>
         </div>
         <button className="button">Lưu thay đổi</button>

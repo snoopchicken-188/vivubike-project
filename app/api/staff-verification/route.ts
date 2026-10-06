@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+
 import { FieldValue } from "firebase-admin/firestore";
 import { firebaseAdminAuth, firebaseAdminDb } from "../../../lib/firebase-admin";
 
@@ -33,13 +33,9 @@ export async function GET(request: Request) {
     const data = customer.data();
     if (!customer.exists || data?.role !== "customer") return NextResponse.json({ error: "Không tìm thấy hồ sơ khách hàng." }, { status: 404 });
     const paths = data?.verificationDocuments || {};
-    const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
     const documents: Record<string, string> = {};
-    for (const [key, filePath] of Object.entries(paths)) {
-      if (typeof filePath !== "string") continue;
-      const { data: signed, error } = await supabase.storage.from(bucket).createSignedUrl(filePath, 60);
-      if (error) throw error;
-      documents[key] = signed.signedUrl;
+    for (const [key, val] of Object.entries(paths)) {
+      if (typeof val === "string") documents[key] = val;
     }
     return NextResponse.json({
       customer: {

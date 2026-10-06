@@ -236,17 +236,20 @@ export default function StaffPage() {
   const currentTitle   = menu.find(m => m.id === view)?.label || "Staff";
 
   /* Actions */
-  const openDetail = async (customerId: string) => {
+  const openDetail = async (customerId?: string) => {
+    if (!customerId) return;
     const user = auth.currentUser; if (!user) return;
     setDetailLoading(true); setDetail(null); setNote("");
     try {
       const token = await user.getIdToken();
       const res = await fetch(`/api/staff-verification?customerId=${customerId}`, { headers: { Authorization: `Bearer ${token}` } });
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error || "Không thể mở hồ sơ.");
+      if (!res.ok) throw new Error(result.error || "Không thể mở hồ sơ, hãy thử lại.");
       setDetail(result); setNote(result.customer.staffNote || "");
-    } catch (e) { notify(e instanceof Error ? e.message : "Không thể mở hồ sơ."); }
-    finally { setDetailLoading(false); }
+    } catch (e) {
+      console.error("Lỗi khi mở hồ sơ:", e);
+      notify(e instanceof Error ? e.message : "Không thể xử lý hồ sơ, hãy thử lại.");
+    } finally { setDetailLoading(false); }
   };
 
   const submitDecision = async (action: "approved" | "needs_update" | "rejected") => {
@@ -440,22 +443,22 @@ export default function StaffPage() {
             <div className="intro"><h2>Xin chào, {staff.fullName}</h2></div>
             {loadError && <div className="alert">{loadError}</div>}
             <div className="task-cards">
-              <div className="task-card group" onClick={() => setView("verification")}>
-                <div className="task-card-icon verification">✓</div>
-                <div className="task-card-content">
-                  <span className="task-count">{pending.length}</span>
-                  <b>Hồ sơ cần xác minh</b>
-                  <small>Khách hàng đang chờ duyệt hồ sơ thuê xe</small>
-                </div>
-                <div className="task-action">Xem chi tiết →</div>
-              </div>
-              
               <div className="task-card group" onClick={() => { setView("rentals"); setActiveStage("pending_approval"); }}>
                 <div className="task-card-icon pending">📋</div>
                 <div className="task-card-content">
                   <span className="task-count">{rentalsByStage.pending_approval.length}</span>
                   <b>Phiếu chờ duyệt</b>
                   <small>Phiếu thuê mới cần xác nhận thông tin</small>
+                </div>
+                <div className="task-action">Xem chi tiết →</div>
+              </div>
+
+              <div className="task-card group" onClick={() => setView("verification")}>
+                <div className="task-card-icon verification">✓</div>
+                <div className="task-card-content">
+                  <span className="task-count">{pending.length}</span>
+                  <b>Hồ sơ cần xác minh</b>
+                  <small>Khách hàng đang chờ duyệt hồ sơ thuê xe</small>
                 </div>
                 <div className="task-action">Xem chi tiết →</div>
               </div>

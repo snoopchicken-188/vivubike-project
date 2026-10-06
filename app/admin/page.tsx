@@ -15,17 +15,15 @@ import {
   deleteDoc,
 
   doc,
-
   getDoc,
-
+  getDocs,
+  query,
+  where,
+  getCountFromServer,
   onSnapshot,
-
   serverTimestamp,
-
   updateDoc,
-
   setDoc,
-
 } from "firebase/firestore";
 
 import { onAuthStateChanged, signOut } from "firebase/auth";
@@ -440,7 +438,7 @@ export default function AdminPage() {
 
         <div className="page-body">
 
-          {view === "overview" && <Overview onChangeView={changeView} />}
+          {view === "overview" && <Overview onChangeView={changeView} adminName={admin.fullName} />}
 
           {view === "customers" && <Customers notify={notify} />}
 
@@ -1758,60 +1756,88 @@ export default function AdminPage() {
 
 
 
-function Overview({
+function Overview({ onChangeView, adminName }: { onChangeView: (view: View) => void; adminName?: string }) {
+  const [customerCount, setCustomerCount] = useState<number | null>(null);
+  const [staffCount, setStaffCount] = useState<number | null>(null);
 
-  onChangeView,
-
-}: {
-
-  onChangeView: (view: View) => void;
-
-}) {
+  useEffect(() => {
+    async function fetchCounts() {
+      try {
+        const usersRef = collection(db, "users");
+        
+        // Fetch customers
+        const qCust = query(usersRef, where("role", "==", "customer"));
+        const snapCust = await getCountFromServer(qCust);
+        setCustomerCount(snapCust.data().count);
+        
+        // Fetch staff
+        const qStaff = query(usersRef, where("role", "==", "staff"));
+        const snapStaff = await getCountFromServer(qStaff);
+        setStaffCount(snapStaff.data().count);
+      } catch (error) {
+        console.error("Lỗi lấy thống kê:", error);
+        setCustomerCount(0);
+        setStaffCount(0);
+      }
+    }
+    fetchCounts();
+  }, []);
 
   return (
+    <div className="overview-page">
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-gray-900 font-sans">Xin chào, {adminName || "Admin"}</h2>
+      </div>
 
-    <>
-
-      <section className="section-grid">
-
-        <div className="panel admin-review">
-
-          <span className="review-label">QUẢN TRỊ TÀI KHOẢN</span>
-
-          <h3>Quản lý người dùng và nhân sự</h3>
-
-          <p>
-
-            Admin cấp tài khoản, khóa/mở khóa và phân quyền. Staff là người duyệt
-
-            hồ sơ xác minh cuối cùng; Admin không duyệt giấy tờ thuê xe.
-
-          </p>
-
-          <div className="review-actions">
-
-            <button
-
-              className="button secondary"
-
-              onClick={() => onChangeView("staff")}
-
-            >
-
-              Quản lý nhân sự
-
-            </button>
-
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        {/* Customer Card */}
+        <div 
+          onClick={() => onChangeView("customers")}
+          className="bg-white rounded-xl p-6 border border-gray-200 cursor-pointer hover:border-orange-500 hover:shadow-md transition-all flex flex-col justify-between"
+          style={{ minHeight: "140px" }}
+        >
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="text-4xl font-extrabold text-gray-900 mb-1">
+                {customerCount === null ? "..." : customerCount}
+              </div>
+              <h3 className="font-bold text-gray-800 text-lg">Khách hàng</h3>
+              <p className="text-sm text-gray-500 mt-1">Tổng số tài khoản khách hàng trên hệ thống</p>
+            </div>
+            <div className="w-12 h-12 rounded-full bg-orange-100 text-orange-500 flex items-center justify-center text-2xl">
+              👤
+            </div>
           </div>
-
+          <div className="mt-4 text-orange-500 text-sm font-semibold flex items-center">
+            Xem chi tiết →
+          </div>
         </div>
 
-      </section>
-
-    </>
-
+        {/* Staff Card */}
+        <div 
+          onClick={() => onChangeView("staff")}
+          className="bg-white rounded-xl p-6 border border-gray-200 cursor-pointer hover:border-orange-500 hover:shadow-md transition-all flex flex-col justify-between"
+          style={{ minHeight: "140px" }}
+        >
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="text-4xl font-extrabold text-gray-900 mb-1">
+                {staffCount === null ? "..." : staffCount}
+              </div>
+              <h3 className="font-bold text-gray-800 text-lg">Nhân sự</h3>
+              <p className="text-sm text-gray-500 mt-1">Đội ngũ nhân viên vận hành hệ thống</p>
+            </div>
+            <div className="w-12 h-12 rounded-full bg-blue-100 text-blue-500 flex items-center justify-center text-2xl">
+              💼
+            </div>
+          </div>
+          <div className="mt-4 text-orange-500 text-sm font-semibold flex items-center">
+            Xem chi tiết →
+          </div>
+        </div>
+      </div>
+    </div>
   );
-
 }
 
 
