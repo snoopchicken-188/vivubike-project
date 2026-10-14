@@ -6,7 +6,7 @@ import { FormEvent, useEffect, useState } from "react";
 
 import { useRouter } from "next/navigation";
 
-import { createUserWithEmailAndPassword, onAuthStateChanged, signInWithEmailAndPassword, signOut, updateProfile } from "firebase/auth";
+import { createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, updateProfile } from "firebase/auth";
 
 import { collection, doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 
@@ -338,7 +338,30 @@ export default function HomePage() {
 
   };
 
-  const handleForgotPassword = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); setAuthMode(null); notify("Liên kết đặt lại mật khẩu đã được gửi đến email của bạn."); };
+  const handleForgotPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const email = String(new FormData(event.currentTarget).get("email") ?? "").trim();
+
+    if (!email) {
+      notify("Vui lòng nhập email đã dùng khi đăng ký.");
+      return;
+    }
+
+    try {
+      auth.languageCode = "vi";
+      await sendPasswordResetEmail(auth, email);
+      setAuthMode(null);
+      notify("Nếu email đã đăng ký, liên kết đặt lại mật khẩu đã được gửi. Hãy kiểm tra Hộp thư đến và Thư rác.");
+    } catch (error: unknown) {
+      const code = (error as { code?: string }).code;
+
+      if (code === "auth/invalid-email") notify("Email không hợp lệ. Bạn hãy kiểm tra lại địa chỉ email.");
+      else if (code === "auth/too-many-requests") notify("Bạn thao tác quá nhiều lần. Hãy chờ một lúc rồi thử lại.");
+      else if (code === "auth/network-request-failed") notify("Không thể kết nối Firebase. Hãy kiểm tra mạng rồi thử lại.");
+      else if (code === "auth/operation-not-allowed") notify("Chức năng email/mật khẩu chưa được bật trong Firebase Authentication.");
+      else notify("Chưa gửi được email đặt lại mật khẩu. Hãy thử lại sau.");
+    }
+  };
 
   const handleSignOut = async () => { await signOut(auth); notify("Bạn đã đăng xuất."); };
 
@@ -525,7 +548,7 @@ export default function HomePage() {
 
 
 
-      {authMode === "forgot" && <div className="auth-overlay"><form className="auth-modal" onSubmit={handleForgotPassword}><button type="button" className="close" onClick={() => setAuthMode(null)}>✕</button><p className="eyebrow orange">QUÊN MẬT KHẨU</p><h2>Đặt lại mật khẩu</h2><p className="auth-desc">Nhập email đã dùng khi đăng ký. Chúng tôi sẽ gửi liên kết đặt lại mật khẩu.</p><label>Email<input type="email" required placeholder="email@example.com" /></label><button className="primary-button">Gửi liên kết →</button><div className="auth-actions"><button type="button" onClick={() => setAuthMode("login")}>Quay lại đăng nhập</button></div></form></div>}
+      {authMode === "forgot" && <div className="auth-overlay"><form className="auth-modal" onSubmit={handleForgotPassword}><button type="button" className="close" onClick={() => setAuthMode(null)}>✕</button><p className="eyebrow orange">QUÊN MẬT KHẨU</p><h2>Đặt lại mật khẩu</h2><p className="auth-desc">Nhập email đã dùng khi đăng ký. Chúng tôi sẽ gửi liên kết đặt lại mật khẩu.</p><label>Email<input name="email" type="email" required placeholder="email@example.com" /></label><button className="primary-button">Gửi liên kết →</button><div className="auth-actions"><button type="button" onClick={() => setAuthMode("login")}>Quay lại đăng nhập</button></div></form></div>}
 
 
 

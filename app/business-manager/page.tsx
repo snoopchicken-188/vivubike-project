@@ -11,11 +11,11 @@ import {
   onSnapshot,
   serverTimestamp,
   updateDoc,
+  writeBatch,
 } from "firebase/firestore";
 import { auth, db } from "../../lib/firebase";
-type Tab = "dashboard" | "vehicles" | "homepage" | "vouchers";
+type Tab = "dashboard" | "vehicles" | "homepage";
 type Period = "today" | "week" | "month" | "custom";
-type DiscountType = "percent" | "fixed";
 type Vehicle = {
   id: string;
   name: string;
@@ -30,6 +30,7 @@ type Vehicle = {
   amenities: string[];
   status: string;
   isVisible: boolean;
+  statusBeforeHide?: string;
 };
 type VehicleForm = Omit<Vehicle, "id" | "amenities"> & {
   id?: string;
@@ -38,24 +39,13 @@ type VehicleForm = Omit<Vehicle, "id" | "amenities"> & {
 type PriceRow = {
   id: string;
   isNew?: boolean;
+  isDirty?: boolean;
   name: string;
   oneToFive: number;
   sixToTen: number;
   elevenToTwenty: number;
   overTwenty: number;
 };
-type Voucher = {
-  id: string;
-  code: string;
-  discountType: DiscountType;
-  discountValue: number;
-  quantity: number;
-  usedCount: number;
-  startDate: string;
-  endDate: string;
-  isActive: boolean;
-};
-type VoucherForm = Omit<Voucher, "id" | "usedCount"> & { id?: string };
 type Booking = {
   id: string;
   status: string;
@@ -126,15 +116,15 @@ const blankVehicle = (): VehicleForm => ({
   status: "available",
   isVisible: true,
 });
-const blankVoucher = (): VoucherForm => ({
-  code: "",
-  discountType: "percent",
-  discountValue: 10,
-  quantity: 50,
-  startDate: "",
-  endDate: "",
-  isActive: true,
-});
+const mergePriceRows = (current: PriceRow[], loaded: PriceRow[]): PriceRow[] => {
+  const drafts = new Map(current.filter(row => row.isNew || row.isDirty).map(row => [row.id, row]));
+  const loadedIds = new Set(loaded.map(row => row.id));
+  return [
+    ...loaded.map(row => drafts.get(row.id) || row),
+    ...current.filter(row => row.isNew && !loadedIds.has(row.id)),
+  ].sort((a, b) => a.name.localeCompare(b.name, "vi"));
+};
+
 const priceInputStyle = {
   width: "100%",
   minWidth: 94,
@@ -158,11 +148,10 @@ export default function BusinessManagerPage() {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [priceRows, setPriceRows] = useState<PriceRow[]>([]);
-  const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [vehicleForm, setVehicleForm] = useState<VehicleForm | null>(null);
-  const [voucherForm, setVoucherForm] = useState<VoucherForm | null>(null);
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
+  const [vehicleActionId, setVehicleActionId] = useState<string | null>(null);
   const notify = (message: string) => {
     setNotice(message);
     window.setTimeout(() => setNotice(""), 3400);
@@ -212,6 +201,7 @@ export default function BusinessManagerPage() {
                 amenities: Array.isArray(data.amenities) ? data.amenities.map(String) : [],
                 status: str(data.status, "available"),
                 isVisible: data.isVisible !== false,
+                statusBeforeHide: str(data.statusBeforeHide),
               };
             })
             .sort((a, b) => a.name.localeCompare(b.name, "vi")),
@@ -247,51 +237,20 @@ export default function BusinessManagerPage() {
     return onSnapshot(
       collection(db, "pricing"),
       (snapshot) => {
-        setPriceRows(
-          snapshot.docs
-            .map((item): PriceRow => {
-              const data = item.data();
-              return {
-                id: item.id,
-                name: str(data.name),
-                oneToFive: num(data.oneToFive),
-                sixToTen: num(data.sixToTen),
-                elevenToTwenty: num(data.elevenToTwenty),
-                overTwenty: num(data.overTwenty),
-              };
-            })
-            .filter((item) => Boolean(item.name))
-            .sort((a, b) => a.name.localeCompare(b.name, "vi")),
-        );
+        const loaded = snapshot.docs.map((item): PriceRow => {
+          const data = item.data();
+          return {
+            id: item.id,
+            name: str(data.name),
+            oneToFive: num(data.oneToFive),
+            sixToTen: num(data.sixToTen),
+            elevenToTwenty: num(data.elevenToTwenty),
+            overTwenty: num(data.overTwenty),
+          };
+        }).filter(item => Boolean(item.name));
+        setPriceRows(current => mergePriceRows(current, loaded));
       },
       () => notify("Không thể tải bảng giá trang chủ."),
-    );
-  }, [ready]);
-  useEffect(() => {
-    if (!ready) return;
-    return onSnapshot(
-      collection(db, "vouchers"),
-      (snapshot) => {
-        setVouchers(
-          snapshot.docs
-            .map((item): Voucher => {
-              const data = item.data();
-              return {
-                id: item.id,
-                code: str(data.code).toUpperCase(),
-                discountType: data.discountType === "fixed" ? "fixed" : "percent",
-                discountValue: num(data.discountValue),
-                quantity: num(data.quantity),
-                usedCount: num(data.usedCount),
-                startDate: str(data.startDate),
-                endDate: str(data.endDate),
-                isActive: data.isActive !== false,
-              };
-            })
-            .sort((a, b) => a.code.localeCompare(b.code)),
-        );
-      },
-      () => notify("Không thể tải voucher."),
     );
   }, [ready]);
   const range = useMemo(() => {
@@ -429,87 +388,35 @@ export default function BusinessManagerPage() {
   };
   const savePrices = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (
-      !priceRows.length ||
-      priceRows.some(
-        (item) =>
-          !item.name.trim() ||
-          item.oneToFive <= 0 ||
-          item.sixToTen <= 0 ||
-          item.elevenToTwenty <= 0 ||
-          item.overTwenty <= 0,
-      )
-    ) {
+    if (saving) return;
+    if (!priceRows.length || priceRows.some(item =>
+      !item.name.trim() || [item.oneToFive, item.sixToTen, item.elevenToTwenty, item.overTwenty]
+        .some(value => !Number.isFinite(value) || value <= 0)
+    )) {
       notify("Hãy nhập đủ tên loại xe và bốn mức giá hợp lệ.");
       return;
     }
     setSaving(true);
     try {
-      await Promise.all(
-        priceRows.map((item) => {
-          const payload = {
-            name: item.name.trim(),
-            oneToFive: Number(item.oneToFive),
-            sixToTen: Number(item.sixToTen),
-            elevenToTwenty: Number(item.elevenToTwenty),
-            overTwenty: Number(item.overTwenty),
-            updatedAt: serverTimestamp(),
-          };
-          return item.isNew
-            ? addDoc(collection(db, "pricing"), {
-                ...payload,
-                createdAt: serverTimestamp(),
-              })
-            : updateDoc(doc(db, "pricing", item.id), payload);
-        }),
-      );
-      notify("Đã cập nhật bảng giá thật trên trang chủ.");
+      const batch = writeBatch(db);
+      priceRows.forEach(item => {
+        const payload = {
+          name: item.name.trim(),
+          oneToFive: Number(item.oneToFive),
+          sixToTen: Number(item.sixToTen),
+          elevenToTwenty: Number(item.elevenToTwenty),
+          overTwenty: Number(item.overTwenty),
+          updatedAt: serverTimestamp(),
+        };
+        const ref = doc(db, "pricing", item.id);
+        if (item.isNew) batch.set(ref, { ...payload, createdAt: serverTimestamp() });
+        else batch.update(ref, payload);
+      });
+      await batch.commit();
+      setPriceRows(current => current.map(item => ({ ...item, isNew: false, isDirty: false })));
+      notify("Đã cập nhật bảng giá trang chủ.");
     } catch {
-      notify("Không thể cập nhật bảng giá.");
-    } finally {
-      setSaving(false);
-    }
-  };
-  const saveVoucher = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (
-      !voucherForm ||
-      !voucherForm.code.trim() ||
-      voucherForm.discountValue <= 0 ||
-      voucherForm.quantity <= 0 ||
-      !voucherForm.startDate ||
-      !voucherForm.endDate ||
-      voucherForm.startDate > voucherForm.endDate ||
-      (voucherForm.discountType === "percent" && voucherForm.discountValue > 100)
-    ) {
-      notify("Thông tin voucher chưa hợp lệ.");
-      return;
-    }
-    setSaving(true);
-    const payload = {
-      code: voucherForm.code.trim().toUpperCase(),
-      discountType: voucherForm.discountType,
-      discountValue: Number(voucherForm.discountValue),
-      quantity: Number(voucherForm.quantity),
-      startDate: voucherForm.startDate,
-      endDate: voucherForm.endDate,
-      isActive: voucherForm.isActive,
-      updatedAt: serverTimestamp(),
-    };
-    try {
-      if (voucherForm.id) {
-        await updateDoc(doc(db, "vouchers", voucherForm.id), payload);
-      } else {
-        await addDoc(collection(db, "vouchers"), {
-          ...payload,
-          usedCount: 0,
-          createdAt: serverTimestamp(),
-        });
-      }
-      setVoucherForm(null);
-      notify("Đã lưu voucher.");
-    } catch {
-      notify("Không thể lưu voucher.");
+      notify("Không thể cập nhật bảng giá. Hãy thử lại.");
     } finally {
       setSaving(false);
     }
@@ -521,57 +428,61 @@ export default function BusinessManagerPage() {
         : blankVehicle(),
     );
   const manageVehicle = async (item: Vehicle, action: "hide" | "delete") => {
-    const question =
-      action === "hide"
-        ? "Ẩn xe này khỏi trang chủ?"
-        : "Xóa vĩnh viễn xe này? Thao tác không thể hoàn tác.";
+    if (vehicleActionId !== null || saving) return;
+    const showing = action === "hide" && !item.isVisible;
+    const question = action === "delete"
+      ? "Xóa vĩnh viễn xe này? Thao tác không thể hoàn tác."
+      : showing
+        ? item.status === "inactive" && !item.statusBeforeHide
+          ? "Bỏ ẩn xe này và chuyển trạng thái sang Trống?"
+          : "Bỏ ẩn xe này?"
+        : "Ẩn xe này khỏi trang chủ?";
     if (!window.confirm(question)) return;
+    setVehicleActionId(item.id);
     try {
       if (action === "hide") {
-        await updateDoc(doc(db, "vehicles", item.id), {
-          isVisible: false,
-          status: "inactive",
+        const payload: { isVisible: boolean; updatedAt: ReturnType<typeof serverTimestamp>; status?: string; statusBeforeHide?: string } = {
+          isVisible: !item.isVisible,
           updatedAt: serverTimestamp(),
-        });
+        };
+        if (!showing) payload.statusBeforeHide = item.status;
+        // Bản cũ đã đổi trạng thái thành inactive khi ẩn xe.
+        if (showing && item.status === "inactive") {
+          payload.status = item.statusBeforeHide || "available";
+        }
+        await updateDoc(doc(db, "vehicles", item.id), payload);
       } else {
         await deleteDoc(doc(db, "vehicles", item.id));
       }
-      notify(action === "hide" ? "Đã ẩn xe khỏi trang chủ." : "Đã xóa xe.");
+      notify(action === "delete" ? "Đã xóa xe." : showing ? "Đã bỏ ẩn xe." : "Đã ẩn xe khỏi trang chủ.");
     } catch {
       notify("Không thể cập nhật xe.");
-    }
-  };
-  const toggleVoucher = async (item: Voucher) => {
-    try {
-      await updateDoc(doc(db, "vouchers", item.id), {
-        isActive: !item.isActive,
-        updatedAt: serverTimestamp(),
-      });
-      notify(item.isActive ? "Voucher đã vô hiệu hóa." : "Voucher đã kích hoạt.");
-    } catch {
-      notify("Không thể cập nhật voucher.");
+    } finally {
+      setVehicleActionId(null);
     }
   };
   const updatePrice = (
     id: string,
-    key: keyof Omit<PriceRow, "id">,
+    key: "name" | "oneToFive" | "sixToTen" | "elevenToTwenty" | "overTwenty",
     value: string | number,
   ) => {
+    if (saving) return;
     setPriceRows((current) =>
       current.map((item) =>
         item.id !== id
           ? item
           : key === "name"
-            ? { ...item, name: String(value) }
-            : { ...item, [key]: num(value) } as PriceRow,
+            ? { ...item, name: String(value), isDirty: true }
+            : { ...item, [key]: num(value), isDirty: true } as PriceRow,
       ),
     );
   };
   const addPriceRow = () => {
+    if (saving) return;
     setPriceRows((current) => [
       ...current,
       {
-        id: "new-" + Date.now(),
+        id: doc(collection(db, "pricing")).id,
         isNew: true,
         name: "",
         oneToFive: 100000,
@@ -581,8 +492,23 @@ export default function BusinessManagerPage() {
       },
     ]);
   };
-  const removeNewPriceRow = (id: string) => {
-    setPriceRows((current) => current.filter((item) => item.id !== id));
+  const removePriceRow = async (item: PriceRow) => {
+    if (saving) return;
+    if (item.isNew) {
+      setPriceRows(current => current.filter(row => row.id !== item.id));
+      return;
+    }
+    if (!window.confirm(`Xóa loại xe "${item.name}" khỏi bảng giá trang chủ?`)) return;
+    setSaving(true);
+    try {
+      await deleteDoc(doc(db, "pricing", item.id));
+      setPriceRows(current => current.filter(row => row.id !== item.id));
+      notify("Đã xóa loại xe khỏi bảng giá trang chủ.");
+    } catch {
+      notify("Không thể xóa loại xe khỏi bảng giá.");
+    } finally {
+      setSaving(false);
+    }
   };
   const filteredVehicles = vehicles.filter((item) =>
     [item.name, item.licensePlate, item.brand, item.type]
@@ -632,15 +558,8 @@ export default function BusinessManagerPage() {
           >
             ▤ Bảng giá trang chủ
           </button>
-          <button
-            className={tab === "vouchers" ? "active" : ""}
-            onClick={() => setTab("vouchers")}
-          >
-            ◇ Quản lý Voucher
-          </button>
         </nav>
         <div className="bm-side-actions">
-          <a href="/">← Xem trang chủ</a>
           <button
             onClick={async () => {
               await signOut(auth);
@@ -660,9 +579,7 @@ export default function BusinessManagerPage() {
                 ? "Báo cáo thống kê"
                 : tab === "vehicles"
                   ? "Quản lý danh mục xe"
-                  : tab === "homepage"
-                    ? "Cập nhật bảng giá trang chủ"
-                    : "Quản lý Voucher"}
+                  : "Cập nhật bảng giá trang chủ"}
             </h1>
           </div>
           <div className="bm-user">
@@ -929,10 +846,13 @@ export default function BusinessManagerPage() {
                       </td>
                       <td>{item.isVisible ? "Đang hiện" : "Đang ẩn"}</td>
                       <td className="actions">
-                        <button onClick={() => editVehicle(item)}>Sửa</button>
-                        <button onClick={() => manageVehicle(item, "hide")}>Ẩn</button>
+                        <button disabled={saving || vehicleActionId !== null} onClick={() => editVehicle(item)}>Sửa</button>
+                        <button disabled={saving || vehicleActionId !== null} onClick={() => manageVehicle(item, "hide")}>
+                          {vehicleActionId === item.id ? "Đang xử lý…" : item.isVisible ? "Ẩn" : "Bỏ ẩn"}
+                        </button>
                         <button
                           className="danger"
+                          disabled={saving || vehicleActionId !== null}
                           onClick={() => manageVehicle(item, "delete")}
                         >
                           Xóa
@@ -1133,7 +1053,7 @@ export default function BusinessManagerPage() {
                   mà khách hàng nhìn thấy.
                 </small>
               </div>
-              <button type="button" className="primary" onClick={addPriceRow}>
+              <button type="button" className="primary" disabled={saving} onClick={addPriceRow}>
                 + Thêm loại xe
               </button>
             </div>
@@ -1157,6 +1077,7 @@ export default function BusinessManagerPage() {
                           <input
                             required
                             value={item.name}
+                            disabled={saving}
                             style={priceInputStyle}
                             onChange={(event) =>
                               updatePrice(item.id, "name", event.target.value)
@@ -1177,6 +1098,7 @@ export default function BusinessManagerPage() {
                               min="1"
                               type="number"
                               value={item[key]}
+                              disabled={saving}
                               style={priceInputStyle}
                               onChange={(event) =>
                                 updatePrice(item.id, key, event.target.value)
@@ -1185,17 +1107,14 @@ export default function BusinessManagerPage() {
                           </td>
                         ))}
                         <td className="actions">
-                          {item.isNew ? (
-                            <button
-                              type="button"
-                              className="danger"
-                              onClick={() => removeNewPriceRow(item.id)}
-                            >
-                              Bỏ dòng
-                            </button>
-                          ) : (
-                            <small>Lưu để cập nhật</small>
-                          )}
+                          <button
+                            type="button"
+                            className="danger"
+                            disabled={saving}
+                            onClick={() => removePriceRow(item)}
+                          >
+                            {item.isNew ? "Bỏ dòng" : "Xóa dòng"}
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1213,224 +1132,6 @@ export default function BusinessManagerPage() {
                 </button>
               </div>
             </form>
-          </section>
-        )}
-        {tab === "vouchers" && (
-          <section className="bm-page">
-            <div className="bm-action">
-              <div>
-                <h2>Mã khuyến mãi</h2>
-                <small>Chỉ voucher đang hoạt động mới được dùng ở bước thanh toán.</small>
-              </div>
-              <button className="primary" onClick={() => setVoucherForm(blankVoucher())}>
-                + Tạo Voucher
-              </button>
-            </div>
-            <div className="bm-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Mã code</th>
-                    <th>Mức giảm</th>
-                    <th>Số lượng</th>
-                    <th>Thời gian áp dụng</th>
-                    <th>Trạng thái</th>
-                    <th>Thao tác</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {vouchers.map((item) => {
-                    const expired =
-                      item.endDate &&
-                      new Date(item.endDate + "T23:59:59") < new Date();
-                    return (
-                      <tr key={item.id}>
-                        <td>
-                          <b>{item.code}</b>
-                        </td>
-                        <td>
-                          {item.discountType === "percent"
-                            ? item.discountValue + "%"
-                            : money(item.discountValue)}
-                        </td>
-                        <td>
-                          {item.usedCount} / {item.quantity}
-                        </td>
-                        <td>
-                          {item.startDate}
-                          <small>đến {item.endDate}</small>
-                        </td>
-                        <td>
-                          <em className={item.isActive && !expired ? "available" : "inactive"}>
-                            {expired
-                              ? "Hết hạn"
-                              : item.isActive
-                                ? "Đang hoạt động"
-                                : "Đã vô hiệu hóa"}
-                          </em>
-                        </td>
-                        <td className="actions">
-                          <button
-                            onClick={() =>
-                              setVoucherForm({
-                                id: item.id,
-                                code: item.code,
-                                discountType: item.discountType,
-                                discountValue: item.discountValue,
-                                quantity: item.quantity,
-                                startDate: item.startDate,
-                                endDate: item.endDate,
-                                isActive: item.isActive,
-                              })
-                            }
-                          >
-                            Sửa
-                          </button>
-                          <button
-                            className={item.isActive ? "danger" : ""}
-                            onClick={() => toggleVoucher(item)}
-                          >
-                            {item.isActive ? "Vô hiệu hóa" : "Kích hoạt"}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {!vouchers.length && (
-                    <tr>
-                      <td colSpan={6}>Chưa có voucher nào.</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            {voucherForm && (
-              <div className="overlay">
-                <form className="editor voucher-editor" onSubmit={saveVoucher}>
-                  <div className="editor-head">
-                    <div>
-                      <p>{voucherForm.id ? "CẬP NHẬT VOUCHER" : "TẠO VOUCHER"}</p>
-                      <h2>
-                        {voucherForm.id ? voucherForm.code : "Thông tin mã giảm giá"}
-                      </h2>
-                    </div>
-                    <button type="button" onClick={() => setVoucherForm(null)}>
-                      ✕
-                    </button>
-                  </div>
-                  <div className="form-grid">
-                    <label>
-                      Mã code
-                      <input
-                        required
-                        value={voucherForm.code}
-                        onChange={(event) =>
-                          setVoucherForm({
-                            ...voucherForm,
-                            code: event.target.value.toUpperCase().replace(/\s/g, ""),
-                          })
-                        }
-                        placeholder="SUMMER2026"
-                      />
-                    </label>
-                    <label>
-                      Loại giảm
-                      <select
-                        value={voucherForm.discountType}
-                        onChange={(event) =>
-                          setVoucherForm({
-                            ...voucherForm,
-                            discountType: event.target.value as DiscountType,
-                          })
-                        }
-                      >
-                        <option value="percent">Theo phần trăm (%)</option>
-                        <option value="fixed">Số tiền cố định (đ)</option>
-                      </select>
-                    </label>
-                    <label>
-                      Giá trị giảm
-                      <input
-                        required
-                        min="1"
-                        type="number"
-                        value={voucherForm.discountValue}
-                        onChange={(event) =>
-                          setVoucherForm({
-                            ...voucherForm,
-                            discountValue: num(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label>
-                      Số lượng mã
-                      <input
-                        required
-                        min="1"
-                        type="number"
-                        value={voucherForm.quantity}
-                        onChange={(event) =>
-                          setVoucherForm({
-                            ...voucherForm,
-                            quantity: num(event.target.value),
-                          })
-                        }
-                      />
-                    </label>
-                    <label>
-                      Ngày bắt đầu
-                      <input
-                        required
-                        type="date"
-                        value={voucherForm.startDate}
-                        onChange={(event) =>
-                          setVoucherForm({
-                            ...voucherForm,
-                            startDate: event.target.value,
-                          })
-                        }
-                      />
-                    </label>
-                    <label>
-                      Ngày hết hạn
-                      <input
-                        required
-                        type="date"
-                        value={voucherForm.endDate}
-                        onChange={(event) =>
-                          setVoucherForm({
-                            ...voucherForm,
-                            endDate: event.target.value,
-                          })
-                        }
-                      />
-                    </label>
-                    <label className="wide check">
-                      <input
-                        type="checkbox"
-                        checked={voucherForm.isActive}
-                        onChange={(event) =>
-                          setVoucherForm({
-                            ...voucherForm,
-                            isActive: event.target.checked,
-                          })
-                        }
-                      />
-                      Kích hoạt để khách hàng có thể dùng mã này
-                    </label>
-                  </div>
-                  <div className="editor-actions">
-                    <button type="button" onClick={() => setVoucherForm(null)}>
-                      Hủy
-                    </button>
-                    <button className="primary" disabled={saving}>
-                      {saving ? "Đang lưu…" : "Lưu Voucher"}
-                    </button>
-                  </div>
-                </form>
-              </div>
-            )}
           </section>
         )}
       </section>

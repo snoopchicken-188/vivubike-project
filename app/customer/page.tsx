@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { onAuthStateChanged, signOut } from "firebase/auth";
+import { onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "firebase/auth";
 import {
   addDoc,
   collection,
@@ -111,6 +111,8 @@ const verificationLabel = (status: string) =>
 export default function CustomerPage() {
   const [view, setView] = useState<View>("overview");
   const [notice, setNotice] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [passwordSaving, setPasswordSaving] = useState(false);
   const [verificationSent, setVerificationSent] = useState(false);
   const [documentPreviews, setDocumentPreviews] = useState<
     Record<DocumentKey, string>
@@ -120,6 +122,7 @@ export default function CustomerPage() {
     fullName: "Khách hàng",
     email: "",
     phone: "",
+    address: "",
     role: "Customer",
     verificationStatus: "not_submitted",
   });
@@ -143,6 +146,7 @@ export default function CustomerPage() {
             fullName,
             email: user.email || "",
             phone: "",
+            address: "",
             role: "customer",
             verificationStatus: "not_submitted",
             createdAt: serverTimestamp(),
@@ -154,6 +158,7 @@ export default function CustomerPage() {
             fullName: user.displayName || user.email || "Khách hàng",
             email: user.email || "",
             phone: "",
+            address: "",
             verificationStatus: "not_submitted",
           };
         setAccount({
@@ -165,6 +170,7 @@ export default function CustomerPage() {
           ),
           email: String(currentProfile.email || user.email || ""),
           phone: String(currentProfile.phone || ""),
+          address: String(currentProfile.address || ""),
           role: "Customer",
           verificationStatus: String(
             currentProfile.verificationStatus || "not_submitted",
@@ -175,6 +181,7 @@ export default function CustomerPage() {
           fullName: user.displayName || user.email || "Khách hàng",
           email: user.email || "",
           phone: "",
+          address: "",
           role: "Customer",
           verificationStatus: "not_submitted",
         });
@@ -367,9 +374,85 @@ export default function CustomerPage() {
     }
   };
 
-  const saveProfile = (event: FormEvent<HTMLFormElement>) => {
+  const saveProfile = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    notify("Thông tin hồ sơ đã được cập nhật.");
+    if (profileSaving) return;
+    const user = auth.currentUser;
+    if (!user) return notify("Bạn cần đăng nhập lại để cập nhật hồ sơ.");
+
+    const form = new FormData(event.currentTarget);
+    const fullName = String(form.get("fullName") || "").trim();
+    const phone = String(form.get("phone") || "").trim();
+    const address = String(form.get("address") || "").trim();
+    if (!fullName || !phone) return notify("Vui lòng nhập họ tên và số điện thoại.");
+
+    setProfileSaving(true);
+    try {
+      await updateDoc(doc(db, "users", user.uid), {
+        fullName,
+        phone,
+        address,
+        updatedAt: serverTimestamp(),
+      });
+      setAccount((current) => ({ ...current, fullName, phone, address }));
+      notify("Thông tin hồ sơ đã được cập nhật.");
+    } catch (error) {
+      console.error("Lỗi cập nhật hồ sơ:", error);
+      const code = (error as { code?: string } | null)?.code;
+      notify(code === "permission-denied"
+        ? "Không có quyền lưu hồ sơ. Hãy kiểm tra quyền cập nhật trong Firestore Rules."
+        : "Không thể lưu thông tin hồ sơ. Vui lòng thử lại.");
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const changeAccountPassword = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (passwordSaving) return;
+    const user = auth.currentUser;
+    if (!user || !user.email) return notify("Bạn cần đăng nhập lại để đổi mật khẩu.");
+    if (!user.providerData.some((provider) => provider.providerId === "password")) {
+      return notify("Tài khoản này chưa có mật khẩu đăng nhập bằng email.");
+    }
+
+    const passwordForm = event.currentTarget;
+    const form = new FormData(passwordForm);
+    const currentPassword = String(form.get("currentPassword") || "");
+    const newPassword = String(form.get("newPassword") || "");
+    const confirmPassword = String(form.get("confirmPassword") || "");
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      return notify("Vui lòng nhập đầy đủ các ô mật khẩu.");
+    }
+    if (newPassword.length < 6) return notify("Mật khẩu mới phải có ít nhất 6 ký tự.");
+    if (newPassword !== confirmPassword) return notify("Mật khẩu nhập lại không khớp.");
+    if (newPassword === currentPassword) return notify("Mật khẩu mới phải khác mật khẩu hiện tại.");
+
+    setPasswordSaving(true);
+    try {
+      const credential = EmailAuthProvider.credential(user.email, currentPassword);
+      await reauthenticateWithCredential(user, credential);
+      await updatePassword(user, newPassword);
+      passwordForm.reset();
+      notify("Đổi mật khẩu thành công. Hãy dùng mật khẩu mới ở lần đăng nhập tiếp theo.");
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code || "";
+      const messages: Record<string, string> = {
+        "auth/wrong-password": "Mật khẩu hiện tại không đúng.",
+        "auth/invalid-credential": "Mật khẩu hiện tại không đúng hoặc phiên đăng nhập không còn hợp lệ.",
+        "auth/invalid-login-credentials": "Mật khẩu hiện tại không đúng.",
+        "auth/weak-password": "Mật khẩu mới chưa đáp ứng yêu cầu bảo mật của tài khoản.",
+        "auth/password-does-not-meet-requirements": "Mật khẩu mới chưa đáp ứng yêu cầu bảo mật của tài khoản.",
+        "auth/too-many-requests": "Bạn đã thử quá nhiều lần. Vui lòng thử lại sau.",
+        "auth/requires-recent-login": "Phiên đăng nhập đã hết hạn xác thực. Hãy đăng nhập lại rồi đổi mật khẩu.",
+        "auth/user-token-expired": "Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại.",
+        "auth/user-disabled": "Tài khoản hiện đang bị vô hiệu hóa.",
+        "auth/network-request-failed": "Không kết nối được Firebase. Hãy kiểm tra mạng và thử lại.",
+      };
+      notify(messages[code] || "Không thể đổi mật khẩu. Vui lòng thử lại.");
+    } finally {
+      setPasswordSaving(false);
+    }
   };
 
   const filteredBookings =
@@ -550,6 +633,10 @@ export default function CustomerPage() {
             fullName={account.fullName}
             email={account.email}
             phone={account.phone}
+            address={account.address}
+            saving={profileSaving}
+            onPasswordSubmit={changeAccountPassword}
+            passwordSaving={passwordSaving}
           />
         )}
       </section>
@@ -1317,6 +1404,10 @@ export default function CustomerPage() {
           border: 1px solid #e5e5e5;
           max-width: 720px;
           padding: 27px;
+        }
+        .profile-form button:disabled {
+          opacity: .6;
+          cursor: not-allowed;
         }
         .profile-form h2 {
           font-size: 20px;
@@ -2801,12 +2892,26 @@ function Profile({
   fullName,
   email,
   phone,
+  address,
+  saving,
+  onPasswordSubmit,
+  passwordSaving,
 }: {
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   fullName: string;
   email: string;
   phone: string;
+  address: string;
+  saving: boolean;
+  onPasswordSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  passwordSaving: boolean;
 }) {
+  const [draft, setDraft] = useState({ fullName, phone, address });
+  const [showPasswords, setShowPasswords] = useState(false);
+  useEffect(() => {
+    setDraft({ fullName, phone, address });
+  }, [fullName, phone, address]);
+
   return (
     <div className="page">
       <div className="section-title">
@@ -2820,13 +2925,24 @@ function Profile({
         <div className="form-grid" style={{ alignItems: "start" }}>
           <label className="field">
             Họ và tên
-            <input defaultValue={fullName} required style={{ height: "43px" }} />
+            <input
+              name="fullName"
+              value={draft.fullName}
+              onChange={(event) => setDraft((current) => ({ ...current, fullName: event.target.value }))}
+              required
+              disabled={saving}
+              style={{ height: "43px" }}
+            />
           </label>
           <label className="field">
             Số điện thoại
             <input
-              defaultValue={phone}
+              name="phone"
+              type="tel"
+              value={draft.phone}
+              onChange={(event) => setDraft((current) => ({ ...current, phone: event.target.value }))}
               required
+              disabled={saving}
               placeholder="Nhập số điện thoại"
               style={{ height: "43px" }}
             />
@@ -2834,7 +2950,7 @@ function Profile({
           <label className="field">
             Email
             <input 
-              defaultValue={email} 
+              value={email} 
               type="email" 
               readOnly 
               name="email"
@@ -2851,10 +2967,75 @@ function Profile({
           </label>
           <label className="field">
             Địa chỉ
-            <input placeholder="Nhập địa chỉ của bạn" style={{ height: "43px" }} />
+            <input
+              name="address"
+              value={draft.address}
+              onChange={(event) => setDraft((current) => ({ ...current, address: event.target.value }))}
+              disabled={saving}
+              placeholder="Nhập địa chỉ của bạn"
+              style={{ height: "43px" }}
+            />
           </label>
         </div>
-        <button className="button">Lưu thay đổi</button>
+        <button className="button" type="submit" disabled={saving}>
+          {saving ? "Đang lưu…" : "Lưu thay đổi"}
+        </button>
+      </form>
+      <form className="profile-form" style={{ marginTop: 20 }} onSubmit={onPasswordSubmit}>
+        <h2>Đổi mật khẩu</h2>
+        <div className="form-grid" style={{ alignItems: "start" }}>
+          <label className="field">
+            Mật khẩu hiện tại
+            <input
+              name="currentPassword"
+              type={showPasswords ? "text" : "password"}
+              autoComplete="current-password"
+              required
+              disabled={passwordSaving}
+              placeholder="Nhập mật khẩu hiện tại"
+              style={{ height: "43px" }}
+            />
+          </label>
+          <label className="field">
+            Mật khẩu mới
+            <input
+              name="newPassword"
+              type={showPasswords ? "text" : "password"}
+              autoComplete="new-password"
+              minLength={6}
+              required
+              disabled={passwordSaving}
+              placeholder="Ít nhất 6 ký tự"
+              style={{ height: "43px" }}
+            />
+          </label>
+          <label className="field">
+            Nhập lại mật khẩu mới
+            <input
+              name="confirmPassword"
+              type={showPasswords ? "text" : "password"}
+              autoComplete="new-password"
+              minLength={6}
+              required
+              disabled={passwordSaving}
+              placeholder="Nhập lại mật khẩu mới"
+              style={{ height: "43px" }}
+            />
+          </label>
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginBottom: 20, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={showPasswords}
+            onChange={(event) => setShowPasswords(event.target.checked)}
+            disabled={passwordSaving}
+            style={{ width: 16, height: 16, accentColor: "#f26522" }}
+          />
+          Hiện mật khẩu
+        </label>
+        <button className="button" type="submit" disabled={passwordSaving}>
+          {passwordSaving ? "Đang đổi mật khẩu…" : "Đổi mật khẩu"}
+        </button>
       </form>
     </div>
   );

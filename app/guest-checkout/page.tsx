@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { doc, getDoc } from "firebase/firestore";
 import { db } from "../../lib/firebase";
@@ -156,6 +156,18 @@ function ProgressBar({ steps, current }: { steps: string[]; current: number }) {
 
 /* ─── Main page ──────────────────────────────────────────── */
 export default function GuestCheckoutPage() {
+  return (
+    <Suspense fallback={
+      <div role="status" style={{ minHeight: "100vh", display: "grid", placeItems: "center", fontFamily: "Arial, sans-serif" }}>
+        Đang tải thông tin đặt xe…
+      </div>
+    }>
+      <GuestCheckoutContent />
+    </Suspense>
+  );
+}
+
+function GuestCheckoutContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const vehicleId = searchParams.get("vehicleId");

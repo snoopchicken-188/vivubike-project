@@ -14,6 +14,7 @@ type Detail = { customer: Customer & { identityNumber: string }; documents: Reco
 type RentalStatus = "pending_approval" | "ready_for_pickup" | "in_progress" | "returning" | "completed";
 type Rental = {
   id: string; code: string;
+  customerId?: string;
   customerName: string; customerEmail: string; customerPhone: string;
   vehicleName: string; licensePlate: string;
   startDate: string; endDate: string;
@@ -112,6 +113,33 @@ const lateText = (mins: number): string => {
   return h > 0 ? `Trễ ${h} giờ${m > 0 ? ` ${m} phút` : ""}` : `Trễ ${m} phút`;
 };
 
+const normalizeRentalSearch = (value: unknown): string => String(value ?? "")
+  .trim()
+  .toLocaleLowerCase("vi")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .replace(/đ/g, "d")
+  .replace(/\s+/g, " ");
+
+const matchesRentalSearch = (rental: Rental, searchValue: string, profile?: Customer): boolean => {
+  const query = normalizeRentalSearch(searchValue);
+  if (!query) return true;
+
+  const nameAndCode = [rental.code, rental.customerName, rental.customerInfo?.fullName];
+  if (!rental.isGuest) nameAndCode.push(profile?.fullName);
+  const matchesText = nameAndCode.some(value => normalizeRentalSearch(value).includes(query));
+  if (rental.isGuest) return matchesText;
+
+  const matchesEmail = [rental.customerEmail, rental.customerInfo?.email, profile?.email]
+    .some(value => normalizeRentalSearch(value).includes(query));
+  const phoneQuery = searchValue.replace(/\D/g, "");
+  const isPhoneQuery = /^[+\d\s().-]+$/.test(searchValue.trim()) && phoneQuery.length > 0;
+  const matchesPhone = isPhoneQuery && [rental.customerPhone, rental.customerInfo?.phone, profile?.phone]
+    .some(value => String(value ?? "").replace(/\D/g, "").includes(phoneQuery));
+
+  return matchesText || matchesEmail || matchesPhone;
+};
+
 /* ─── Page ───────────────────────────────────────────────────────────── */
 export default function StaffPage() {
   const router = useRouter();
@@ -185,9 +213,10 @@ export default function StaffPage() {
       return {
         id: d.id,
         code: String(data.code || d.id),
-        customerName: String(data.customerName || "Khách hàng"),
-        customerEmail: String(data.customerEmail || ""),
-        customerPhone: String(data.customerPhone || data.phone || ""),
+        customerId: data.customerId ? String(data.customerId) : undefined,
+        customerName: String(data.customerName || data.guestName || data.customerInfo?.fullName || "Khách hàng"),
+        customerEmail: String(data.customerEmail || data.guestEmail || data.customerInfo?.email || ""),
+        customerPhone: String(data.customerPhone || data.guestPhone || data.phone || data.customerInfo?.phone || ""),
         vehicleName: String(data.vehicleName || "Xe thuê"),
         licensePlate: String(data.licensePlate || ""),
         startDate: String(data.startDate || ""),
@@ -219,19 +248,12 @@ export default function StaffPage() {
   }, [rentals]);
 
   const visibleRentals = useMemo(() => {
-    let list = rentalsByStage[activeStage] || [];
-    if (rentalSearch.trim()) {
-      const q = rentalSearch.trim().toLowerCase();
-      list = list.filter(r => 
-        r.code.toLowerCase().includes(q) ||
-        r.customerName.toLowerCase().includes(q) ||
-        r.customerEmail.toLowerCase().includes(q) ||
-        r.customerPhone.toLowerCase().includes(q)
-      );
-    }
-    return list;
-  }, [rentalsByStage, activeStage, rentalSearch]);
-  
+    const profilesById = new Map(customers.map(customer => [customer.id, customer]));
+    return (rentalsByStage[activeStage] || []).filter(rental =>
+      matchesRentalSearch(rental, rentalSearch, rental.customerId ? profilesById.get(rental.customerId) : undefined)
+    );
+  }, [rentalsByStage, activeStage, rentalSearch, customers]);
+
   const currentStage   = STAGES.find(s => s.key === activeStage)!;
   const currentTitle   = menu.find(m => m.id === view)?.label || "Staff";
 
@@ -548,7 +570,7 @@ export default function StaffPage() {
                   </span>
                   <input
                     type="text"
-                    placeholder="Tìm theo mã phiếu, tên khách hoặc email"
+                    placeholder="Tìm theo mã phiếu, tên, email hoặc số điện thoại"
                     value={rentalSearch}
                     onChange={(e) => setRentalSearch(e.target.value)}
                     style={{ width: "100%", padding: "8px 32px", border: "1px solid #e5e7eb", borderRadius: "8px", outline: "none", fontSize: "14px" }}
@@ -609,7 +631,10 @@ export default function StaffPage() {
                         })()}
                       </div>
                       <div><b>{r.totalAmount ? money(r.totalAmount) : "—"}</b></div>
-                      <div className="rental-actions">
+                      <div
+                        className={`rental-actions${activeStage === "pending_approval" ? " pending-rental-actions" : ""}`}
+                        style={activeStage === "pending_approval" ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 } : undefined}
+                      >
                         {/* Stage returning: open settlement modal instead of direct advance */}
                         {activeStage === "returning" ? (
                           <button
@@ -622,6 +647,7 @@ export default function StaffPage() {
                         ) : activeStage === "pending_approval" ? (
                           <button
                             className="btn-action"
+                            style={{ width: "100%", minWidth: 0, boxSizing: "border-box", paddingLeft: 6, paddingRight: 6, whiteSpace: "nowrap", fontSize: 11 }}
                             disabled={actionLoading === r.id}
                             onClick={() => {
                               if (r.isGuest) {
@@ -647,6 +673,7 @@ export default function StaffPage() {
                         {currentStage.rejectLabel && (
                           <button
                             className="btn-reject"
+                            style={activeStage === "pending_approval" ? { width: "100%", minWidth: 0, boxSizing: "border-box", paddingLeft: 6, paddingRight: 6, whiteSpace: "nowrap", fontSize: 11 } : undefined}
                             disabled={actionLoading === r.id}
                             onClick={() => rejectRental(r)}
                           >
@@ -1138,6 +1165,8 @@ export default function StaffPage() {
         .rental-row b{display:block;font-size:14px}
         .rental-row small{display:block;color:#69747e;font-size:11px;margin-top:3px}
         .rental-actions{display:flex;gap:8px;flex-wrap:wrap}
+        .pending-rental-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+        .pending-rental-actions .btn-action,.pending-rental-actions .btn-reject{width:100%;min-width:0;white-space:nowrap}
         .btn-action{background:#f26522;border:none;color:#fff;font:800 12px "Be Vietnam Pro";padding:9px 14px;border-radius:4px;cursor:pointer;transition:.15s}
         .btn-action:hover{background:#d9541a}.btn-action:disabled{opacity:.6;cursor:not-allowed}
         .btn-reject{background:#fff;border:1px solid #e16f68;color:#b22f2b;font:800 12px "Be Vietnam Pro";padding:9px 14px;border-radius:4px;cursor:pointer}
