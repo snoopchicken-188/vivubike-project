@@ -27,8 +27,17 @@ import {
 } from "firebase/firestore";
 
 import { onAuthStateChanged, signOut } from "firebase/auth";
-
 import { auth, db } from "../../lib/firebase";
+import {
+  DEFAULT_HOME_CONTENT,
+  normalizeHomeContent,
+  fileToBase64,
+  HomeSlideItem,
+  HomeAboutContent,
+  HomePolicyItem,
+  HomePoliciesContent,
+  HomeContactContent,
+} from "@/lib/home-content";
 
 
 
@@ -200,10 +209,16 @@ export default function AdminPage() {
 
   const [notice, setNotice] = useState("");
 
-
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const viewParam = params.get("view") as View | null;
+    if (viewParam && ["overview", "customers", "staff", "content"].includes(viewParam)) {
+      setView(viewParam);
+    }
+  }, []);
 
   useEffect(() => {
-
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
 
       if (!user) {
@@ -1770,10 +1785,12 @@ function Overview({ onChangeView, adminName }: { onChangeView: (view: View) => v
         const snapCust = await getCountFromServer(qCust);
         setCustomerCount(snapCust.data().count);
         
-        // Fetch staff
-        const qStaff = query(usersRef, where("role", "==", "staff"));
-        const snapStaff = await getCountFromServer(qStaff);
-        setStaffCount(snapStaff.data().count);
+        // Fetch staff — đếm cả "staff" lẫn "business_manager" (khớp với trang Quản lý Nhân sự)
+        const [snapStaff, snapBM] = await Promise.all([
+          getCountFromServer(query(usersRef, where("role", "==", "staff"))),
+          getCountFromServer(query(usersRef, where("role", "==", "business_manager"))),
+        ]);
+        setStaffCount(snapStaff.data().count + snapBM.data().count);
       } catch (error) {
         console.error("Lỗi lấy thống kê:", error);
         setCustomerCount(0);
@@ -1956,11 +1973,12 @@ function Customers({ notify }: { notify: (message: string) => void }) {
 
     try {
 
-      await updateDoc(doc(db, "users", blockingUser.id), {
+      const willLock = !blockingUser.isBlocked;
 
-        isBlocked: !blockingUser.isBlocked,
-
-      });
+      await updateDoc(doc(db, "users", blockingUser.id), willLock
+        ? { isBlocked: true, status: "locked", lockedAt: serverTimestamp() }
+        : { isBlocked: false, status: "active", lockedAt: null }
+      );
 
       notify(blockingUser.isBlocked ? "Đã mở khóa tài khoản." : "Đã khóa tài khoản.");
 
@@ -2345,269 +2363,196 @@ function Customers({ notify }: { notify: (message: string) => void }) {
 }
 
 function Staff({ notify }: { notify: (message: string) => void }) {
-
   const [items, setItems] = useState<
-
-    { id: string; fullName: string; email: string; phone: string; role: string; isBlocked: boolean }[]
-
+    { id: string; fullName: string; email: string; phone: string; role: string; roleTitle?: string; isBlocked: boolean }[]
   >([]);
-
   const [keyword, setKeyword] = useState("");
-
   const [loadError, setLoadError] = useState("");
-
   const [editingStaff, setEditingStaff] = useState<{ id: string; fullName: string; phone: string } | null>(null);
-
   const [isSaving, setIsSaving] = useState(false);
-
   const [deletingStaff, setDeletingStaff] = useState<{ id: string; fullName: string } | null>(null);
-
   const [isDeleting, setIsDeleting] = useState(false);
-
   const [roleStaff, setRoleStaff] = useState<{ id: string; fullName: string; email: string; role: string } | null>(null);
-
   const [isChangingRole, setIsChangingRole] = useState(false);
 
-
-
   const [isCreating, setIsCreating] = useState(false);
-
   const [createForm, setCreateForm] = useState({ fullName: "", email: "", phone: "", password: "", role: "staff" });
-
   const [showPassword, setShowPassword] = useState(false);
-
   const [createError, setCreateError] = useState("");
 
-
-
-
-
-
+  const refreshStaffList = async () => {
+    try {
+      const snap = await getDocs(collection(db, "users"));
+      setLoadError("");
+      setItems(
+        snap.docs
+          .map((item) => {
+            const data = item.data();
+            return {
+              id: item.id,
+              role: String(data.role || "").toLowerCase(),
+              roleTitle: String(data.roleTitle || ""),
+              fullName: String(data.fullName || "Chưa cập nhật tên"),
+              email: String(data.email || ""),
+              phone: String(data.phone || data.phoneNumber || "Chưa cập nhật"),
+              isBlocked: Boolean(data.isBlocked),
+            };
+          })
+          .filter((item) => ["staff", "business_manager"].includes(item.role))
+      );
+    } catch (err) {
+      console.error("Lỗi khi tải lại danh sách nhân sự:", err);
+    }
+  };
 
   useEffect(() => {
-
     return onSnapshot(
-
       collection(db, "users"),
-
       (snapshot) => {
-
         setLoadError("");
-
         setItems(
-
           snapshot.docs
-
             .map((item) => {
-
               const data = item.data();
-
               return {
-
                 id: item.id,
-
                 role: String(data.role || "").toLowerCase(),
-
+                roleTitle: String(data.roleTitle || ""),
                 fullName: String(data.fullName || "Chưa cập nhật tên"),
-
                 email: String(data.email || ""),
-
-                phone: String(data.phone || "Chưa cập nhật"),
-
+                phone: String(data.phone || data.phoneNumber || "Chưa cập nhật"),
                 isBlocked: Boolean(data.isBlocked),
-
               };
-
             })
-
-            .filter((item) => ["staff", "business_manager"].includes(item.role)),
-
+            .filter((item) => ["staff", "business_manager"].includes(item.role))
         );
-
       },
-
       () =>
-
         setLoadError(
-
-          "Admin chưa có quyền đọc danh sách nhân sự trong Firestore.",
-
-        ),
-
+          "Admin chưa có quyền đọc danh sách nhân sự trong Firestore."
+        )
     );
-
   }, []);
 
-
-
   const visible = items.filter((item) =>
-
     (item.fullName + " " + item.email)
-
       .toLowerCase()
-
-      .includes(keyword.toLowerCase()),
-
+      .includes(keyword.toLowerCase())
   );
 
-
-
   const handleSave = async (e: React.FormEvent) => {
-
     e.preventDefault();
-
     if (!editingStaff) return;
-
     setIsSaving(true);
-
     try {
-
       await updateDoc(doc(db, "users", editingStaff.id), {
-
         fullName: editingStaff.fullName,
-
         phone: editingStaff.phone,
-
       });
-
       notify("Cập nhật thông tin nhân viên thành công.");
-
       setEditingStaff(null);
-
     } catch (err) {
-
       notify("Lỗi khi cập nhật thông tin.");
-
     } finally {
-
       setIsSaving(false);
-
     }
-
   };
-
-
 
   const handleDelete = async () => {
-
     if (!deletingStaff) return;
-
     setIsDeleting(true);
-
     try {
-
       await deleteDoc(doc(db, "users", deletingStaff.id));
-
       notify("Đã xóa nhân viên.");
-
       setDeletingStaff(null);
-
     } catch (err) {
-
       notify("Lỗi khi xóa nhân viên.");
-
     } finally {
-
       setIsDeleting(false);
-
     }
-
   };
-
-
 
   const handleRoleChange = async (e: React.FormEvent) => {
-
     e.preventDefault();
-
     if (!roleStaff) return;
-
     setIsChangingRole(true);
-
     try {
-
       await updateDoc(doc(db, "users", roleStaff.id), {
-
         role: roleStaff.role,
-
       });
-
       notify("Đổi vai trò thành công.");
-
       setRoleStaff(null);
-
     } catch (err) {
-
       notify("Lỗi khi cập nhật vai trò.");
-
     } finally {
-
       setIsChangingRole(false);
-
     }
-
   };
 
-
-
   const handleCreate = async (e: React.FormEvent) => {
-
     e.preventDefault();
-
     setCreateError("");
-
     setIsSaving(true);
 
     try {
-
-      const token = await auth.currentUser?.getIdToken();
-
+      const token = await auth.currentUser?.getIdToken(true);
       if (!token) {
-
         throw new Error("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
-
       }
 
-      const res = await fetch("/api/admin/create-user", {
+      const roleTitle =
+        createForm.role === "business_manager"
+          ? "Quản lý kinh doanh"
+          : "Nhân viên vận hành";
 
+      const payload = {
+        fullName: createForm.fullName.trim(),
+        email: createForm.email.trim(),
+        phoneNumber: createForm.phone.trim(),
+        phone: createForm.phone.trim(),
+        password: createForm.password,
+        role: createForm.role,
+        roleTitle,
+      };
+
+      const res = await fetch("/api/admin/create-staff", {
         method: "POST",
-
         headers: {
-
           "Content-Type": "application/json",
-
           Authorization: `Bearer ${token}`,
-
         },
-
-        body: JSON.stringify(createForm),
-
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
 
-      if (!res.ok) {
-
-        throw new Error(data.error || "Có lỗi xảy ra");
-
+      if (!res.ok || !data.success) {
+        console.error("Lỗi phản hồi từ API cấp tài khoản nhân sự:", data);
+        let errorMsg = data.error || data.message || "Không thể cấp tài khoản. Vui lòng thử lại.";
+        if (data.code === "auth/email-already-exists" || errorMsg.includes("email-already-exists")) {
+          errorMsg = "Email này đã được sử dụng trên hệ thống.";
+        } else if (data.code === "auth/weak-password" || errorMsg.includes("weak-password")) {
+          errorMsg = "Mật khẩu khởi tạo phải có ít nhất 6 ký tự.";
+        }
+        throw new Error(errorMsg);
       }
 
-      notify("Cấp tài khoản thành công!");
-
+      notify("Cấp tài khoản nhân sự thành công!");
       setIsCreating(false);
-
       setCreateForm({ fullName: "", email: "", phone: "", password: "", role: "staff" });
-
+      await refreshStaffList();
     } catch (err: any) {
-
-      setCreateError(err.message);
-
+      console.error("Không thể cấp tài khoản nhân sự:", err);
+      let msg = err.message || "Có lỗi xảy ra khi cấp tài khoản.";
+      if (msg.includes("auth/email-already-exists") || msg.includes("email đã được sử dụng")) {
+        msg = "Email này đã được sử dụng trên hệ thống.";
+      } else if (msg.includes("auth/weak-password") || msg.includes("ít nhất 6 ký tự")) {
+        msg = "Mật khẩu khởi tạo phải có ít nhất 6 ký tự.";
+      }
+      setCreateError(msg);
     } finally {
-
       setIsSaving(false);
-
     }
-
   };
 
 
@@ -2709,13 +2654,10 @@ function Staff({ notify }: { notify: (message: string) => void }) {
                   <td>{item.phone}</td>
 
                   <td>
-
-                    {item.role === "business_manager"
-
-                      ? "Quản lý kinh doanh"
-
-                      : "Nhân viên vận hành"}
-
+                    {item.roleTitle ||
+                      (item.role === "business_manager"
+                        ? "Quản lý kinh doanh"
+                        : "Nhân viên vận hành")}
                   </td>
 
                   <td style={{ textAlign: "right" }}>
@@ -2918,7 +2860,22 @@ function Staff({ notify }: { notify: (message: string) => void }) {
 
             <h3>Cấp tài khoản nhân sự mới</h3>
 
-            {createError && <div style={{ color: "red", marginBottom: 10 }}>{createError}</div>}
+            {createError && (
+              <div
+                style={{
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  color: "#dc2626",
+                  padding: "10px 14px",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  marginBottom: 14,
+                }}
+              >
+                ⚠️ {createError}
+              </div>
+            )}
 
             <form onSubmit={handleCreate}>
 
@@ -3237,397 +3194,1084 @@ function Staff({ notify }: { notify: (message: string) => void }) {
 }
 
 function Content({ notify }: { notify: (message: string) => void }) {
-
   const [modalType, setModalType] = useState<"slides" | "about" | "contact" | null>(null);
-
   const [loadingData, setLoadingData] = useState(true);
-
   const [saving, setSaving] = useState(false);
 
+  // Dữ liệu nội dung trang chủ (được tải từ Firestore site_settings/home_content)
+  const [slides, setSlides] = useState<HomeSlideItem[]>(DEFAULT_HOME_CONTENT.slides);
+  const [about, setAbout] = useState<HomeAboutContent>(DEFAULT_HOME_CONTENT.about);
+  const [policies, setPolicies] = useState<HomePoliciesContent>(DEFAULT_HOME_CONTENT.policies);
+  const [contact, setContact] = useState<HomeContactContent>(DEFAULT_HOME_CONTENT.contact);
 
+  // State nháp dùng trong các Modal
+  const [editingSlides, setEditingSlides] = useState<HomeSlideItem[]>([]);
+  const [activeSlideIdx, setActiveSlideIdx] = useState(0);
+  const [isUploadingImage, setIsUploadingImage] = useState(false);
 
-  const [slides, setSlides] = useState<any[]>([]);
+  const [editingAbout, setEditingAbout] = useState<HomeAboutContent>(DEFAULT_HOME_CONTENT.about);
+  const [editingPolicies, setEditingPolicies] = useState<HomePoliciesContent>(DEFAULT_HOME_CONTENT.policies);
+  const [editingContact, setEditingContact] = useState<HomeContactContent>(DEFAULT_HOME_CONTENT.contact);
 
-  const [about, setAbout] = useState({ introText: "", fullDescription: "", policies: [] as string[] });
-
-  const [contact, setContact] = useState({ hotline: "", email: "", address: "", workingHours: "", socialLinks: { facebook: "", zalo: "" } });
-
-
-
+  // Tải dữ liệu từ Firestore document: site_settings/home_content
   useEffect(() => {
-
     async function loadData() {
-
+      setLoadingData(true);
       try {
-
-        const docSnap = await getDoc(doc(db, "site_settings", "homepage"));
+        const docRef = doc(db, "site_settings", "home_content");
+        const docSnap = await getDoc(docRef);
 
         if (docSnap.exists()) {
-
-          const data = docSnap.data();
-
-          if (data.slides) setSlides(data.slides);
-
-          if (data.about) {
-
-            setAbout({
-
-              introText: data.about.introText || "",
-
-              fullDescription: data.about.fullDescription || "",
-
-              policies: data.about.policies || []
-
-            });
-
+          const normalized = normalizeHomeContent(docSnap.data());
+          setSlides(normalized.slides);
+          setAbout(normalized.about);
+          setPolicies(normalized.policies);
+          setContact(normalized.contact);
+        } else {
+          // Kiểm tra xem có dữ liệu cũ ở "homepage" không
+          const oldSnap = await getDoc(doc(db, "site_settings", "homepage"));
+          if (oldSnap.exists()) {
+            const normalized = normalizeHomeContent(oldSnap.data());
+            setSlides(normalized.slides);
+            setAbout(normalized.about);
+            setPolicies(normalized.policies);
+            setContact(normalized.contact);
+          } else {
+            // Document chưa có: Thiết lập mặc định
+            setSlides(DEFAULT_HOME_CONTENT.slides);
+            setAbout(DEFAULT_HOME_CONTENT.about);
+            setPolicies(DEFAULT_HOME_CONTENT.policies);
+            setContact(DEFAULT_HOME_CONTENT.contact);
           }
-
-          if (data.contact) {
-
-            setContact({
-
-              hotline: data.contact.hotline || "",
-
-              email: data.contact.email || "",
-
-              address: data.contact.address || "",
-
-              workingHours: data.contact.workingHours || "",
-
-              socialLinks: data.contact.socialLinks || { facebook: "", zalo: "" }
-
-            });
-
-          }
-
         }
-
       } catch (err) {
-
-        notify("Lỗi tải dữ liệu trang chủ.");
-
+        console.error("Lỗi khi tải dữ liệu home_content:", err);
+        notify("Lỗi kết nối Firestore, đang sử dụng dữ liệu mặc định.");
       } finally {
-
         setLoadingData(false);
-
       }
-
     }
-
     loadData();
-
   }, [notify]);
 
-
-
-  const handleSave = async (section: "slides" | "about" | "contact", data: any) => {
-
-    setSaving(true);
-
-    try {
-
-      await setDoc(doc(db, "site_settings", "homepage"), {
-
-        [section]: data
-
-      }, { merge: true });
-
-      notify("Đã lưu nội dung thành công!");
-
-      setModalType(null);
-
-    } catch (err) {
-
-      notify("Có lỗi khi lưu dữ liệu.");
-
-    } finally {
-
-      setSaving(false);
-
-    }
-
+  // Mở các modal với dữ liệu clone, đảm bảo luôn có danh sách đầy đủ các slide (>= 3)
+  const handleOpenSlides = () => {
+    const effectiveSlides = (slides && slides.length >= 3)
+      ? slides
+      : (slides && slides.length > 0)
+      ? [...slides, ...DEFAULT_HOME_CONTENT.slides.slice(slides.length)]
+      : DEFAULT_HOME_CONTENT.slides;
+    setEditingSlides(JSON.parse(JSON.stringify(effectiveSlides)));
+    setActiveSlideIdx(0);
+    setModalType("slides");
   };
 
+  const handleOpenAbout = () => {
+    setEditingAbout(JSON.parse(JSON.stringify(about)));
+    setEditingPolicies(JSON.parse(JSON.stringify(policies)));
+    setModalType("about");
+  };
 
+  const handleOpenContact = () => {
+    setEditingContact(JSON.parse(JSON.stringify(contact)));
+    setModalType("contact");
+  };
 
-  if (loadingData) return <div className="p-8 text-center text-gray-500">Đang tải cấu hình...</div>;
+  // Xử lý upload ảnh chuyển Base64
+  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>, slideIdx: number) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
 
+    if (file.size > 8 * 1024 * 1024) {
+      notify("Dung lượng file lớn hơn 8MB. Vui lòng chọn ảnh nhỏ hơn.");
+      return;
+    }
 
+    setIsUploadingImage(true);
+    try {
+      const base64 = await fileToBase64(file);
+      const updated = [...editingSlides];
+      updated[slideIdx] = {
+        ...updated[slideIdx],
+        imageUrl: base64,
+      };
+      setEditingSlides(updated);
+      notify("Đã tải ảnh lên và chuyển đổi Base64 thành công!");
+    } catch (err) {
+      console.error("Lỗi fileToBase64:", err);
+      notify("Không thể đọc file ảnh. Vui lòng thử lại.");
+    } finally {
+      setIsUploadingImage(false);
+      e.target.value = "";
+    }
+  };
+
+  // Lưu Slide
+  const handleSaveSlides = async () => {
+    if (editingSlides.length === 0) {
+      notify("Vui lòng giữ lại ít nhất 1 slide!");
+      return;
+    }
+    setSaving(true);
+    try {
+      await setDoc(doc(db, "site_settings", "home_content"), {
+        slides: editingSlides,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      setSlides(editingSlides);
+      notify("Đã lưu nội dung slide đầu trang thành công!");
+      setModalType(null);
+    } catch (err: unknown) {
+      console.error("Lỗi lưu slide:", err);
+      notify("Lỗi khi lưu slide: " + (err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Lưu Giới thiệu & Chính sách hỗ trợ
+  const handleSaveAboutAndPolicies = async () => {
+    setSaving(true);
+    try {
+      await setDoc(doc(db, "site_settings", "home_content"), {
+        about: editingAbout,
+        policies: editingPolicies,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      setAbout(editingAbout);
+      setPolicies(editingPolicies);
+      notify("Đã lưu giới thiệu và chính sách hỗ trợ thành công!");
+      setModalType(null);
+    } catch (err: unknown) {
+      console.error("Lỗi lưu about & policies:", err);
+      notify("Lỗi khi lưu: " + (err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Lưu Thông tin liên hệ
+  const handleSaveContact = async () => {
+    setSaving(true);
+    try {
+      await setDoc(doc(db, "site_settings", "home_content"), {
+        contact: editingContact,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      setContact(editingContact);
+      notify("Đã lưu thông tin liên hệ thành công!");
+      setModalType(null);
+    } catch (err: unknown) {
+      console.error("Lỗi lưu liên hệ:", err);
+      notify("Lỗi khi lưu liên hệ: " + (err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loadingData) {
+    return (
+      <div style={{ padding: "60px 20px", textAlign: "center", color: "#64748b" }}>
+        <div style={{ fontSize: 24, marginBottom: 8 }}>⏳</div>
+        <div>Đang tải cấu hình nội dung trang chủ...</div>
+      </div>
+    );
+  }
+
+  const currentSlide = editingSlides[activeSlideIdx] || editingSlides[0];
 
   return (
-
     <>
-
       <div className="view-head">
-
         <div>
-
-          <h2>Nội dung hiển thị</h2>
-
-          <p>Quản lý các nội dung công khai của trang chủ.</p>
-
+          <h2>Nội dung trang chủ</h2>
+          <p>Quản lý các banner slider, thông tin giới thiệu, chính sách và liên hệ hiển thị ra trang chủ.</p>
         </div>
-
       </div>
 
-      <section className="panel form-card">
-
-        <h3>Nội dung cần quản lý</h3>
-
+      <section className="panel form-card" style={{ maxWidth: 840 }}>
+        <h3>Các mục nội dung</h3>
         <ul className="info-list">
-
-          <li>
-
-            <span>Ảnh và nội dung slide đầu trang</span>
-
-            <button className="link-button" onClick={() => setModalType("slides")}>Chỉnh sửa</button>
-
+          {/* Mục 1: Hero Slideshow */}
+          <li style={{ alignItems: "center", padding: "18px 0" }}>
+            <div>
+              <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+                <span>🖼️ Ảnh và nội dung slide đầu trang</span>
+                <span style={{ fontSize: 11, background: "#fff7ed", color: "#c2410c", padding: "2px 8px", borderRadius: 999, fontWeight: 700 }}>
+                  {slides.length} slide
+                </span>
+              </div>
+              <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                Ảnh nền, tiêu đề lớn nhỏ, mô tả ngắn và các tag nổi bật trên banner chính.
+              </p>
+            </div>
+            <button
+              className="button"
+              style={{ background: "#f86522", color: "#fff", padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}
+              onClick={handleOpenSlides}
+            >
+              Chỉnh sửa
+            </button>
           </li>
 
-          <li>
-
-            <span>Giới thiệu và chính sách hỗ trợ</span>
-
-            <button className="link-button" onClick={() => setModalType("about")}>Chỉnh sửa</button>
-
+          {/* Mục 2: Giới thiệu & Chính sách hỗ trợ */}
+          <li style={{ alignItems: "center", padding: "18px 0" }}>
+            <div>
+              <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+                <span>🛡️ Giới thiệu và chính sách hỗ trợ</span>
+                <span style={{ fontSize: 11, background: "#ecfdf5", color: "#047857", padding: "2px 8px", borderRadius: 999, fontWeight: 700 }}>
+                  {policies.items.length} chính sách
+                </span>
+              </div>
+              <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                Văn bản giới thiệu về Vi Vu Bike và danh sách các thẻ chính sách hỗ trợ khách hàng.
+              </p>
+            </div>
+            <button
+              className="button"
+              style={{ background: "#f86522", color: "#fff", padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}
+              onClick={handleOpenAbout}
+            >
+              Chỉnh sửa
+            </button>
           </li>
 
-          <li>
-
-            <span>Thông tin liên hệ, hotline, địa chỉ</span>
-
-            <button className="link-button" onClick={() => setModalType("contact")}>Chỉnh sửa</button>
-
+          {/* Mục 3: Thông tin liên hệ */}
+          <li style={{ alignItems: "center", padding: "18px 0" }}>
+            <div>
+              <div style={{ fontWeight: 700, color: "#1e293b", fontSize: 15, display: "flex", alignItems: "center", gap: 8 }}>
+                <span>📞 Thông tin liên hệ, hotline, địa chỉ</span>
+              </div>
+              <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                Hotline ({contact.hotline || "0900 123 456"}), cơ sở ({contact.address || "Hà Nội"}), email, giờ làm việc và MXH.
+              </p>
+            </div>
+            <button
+              className="button"
+              style={{ background: "#f86522", color: "#fff", padding: "8px 16px", borderRadius: 8, fontSize: 13, fontWeight: 700 }}
+              onClick={handleOpenContact}
+            >
+              Chỉnh sửa
+            </button>
           </li>
-
         </ul>
-
       </section>
 
-
-
-      {/* MODAL: SLIDES */}
-
+      {/* ========================================================================= */}
+      {/* MODAL 1: ẢNH VÀ NỘI DUNG SLIDE ĐẦU TRANG (HERO SLIDESHOW) */}
+      {/* ========================================================================= */}
       {modalType === "slides" && (
+        <div
+          className="modal-overlay"
+          onClick={() => setModalType(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: 20,
+          }}
+        >
+          <div
+            className="modal-content panel form-card"
+            style={{
+              maxWidth: 900,
+              width: "100%",
+              maxHeight: "92vh",
+              overflowY: "auto",
+              background: "#fff",
+              borderRadius: 16,
+              boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
+              padding: 28,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header Modal */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, borderBottom: "1px solid #f1f5f9", paddingBottom: 14 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#0f172a" }}>Ảnh và nội dung slide đầu trang (Hero Slideshow)</h3>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                  Chỉnh sửa tiêu đề, mô tả, tag cam kết và ảnh nền (nhập URL hoặc tải file ảnh Base64).
+                </p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (confirm("Khôi phục lại toàn bộ 4 slide mẫu gốc của Vi Vu Bike? Các thay đổi chưa lưu sẽ được thay thế.")) {
+                      setEditingSlides(JSON.parse(JSON.stringify(DEFAULT_HOME_CONTENT.slides)));
+                      setActiveSlideIdx(0);
+                      notify("Đã tải lại toàn bộ 4 slide mẫu mặc định!");
+                    }
+                  }}
+                  style={{
+                    border: "1px solid #cbd5e1",
+                    background: "#f8fafc",
+                    borderRadius: 8,
+                    padding: "7px 12px",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: "#475569",
+                  }}
+                  title="Tải lại toàn bộ 4 slide mẫu gốc"
+                >
+                  ↺ Khôi phục slide mặc định
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModalType(null)}
+                  style={{ border: 0, background: "#f1f5f9", borderRadius: "50%", width: 34, height: 34, cursor: "pointer", fontSize: 16, fontWeight: 700, color: "#64748b" }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
 
-        <div className="modal-overlay">
-
-          <div className="modal-content panel form-card" style={{ maxWidth: 800 }}>
-
-            <h3>Chỉnh sửa Slide</h3>
-
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-
-              {slides.map((s, i) => (
-
-                <div key={s.id || i} className="p-4 border border-gray-200 rounded-md space-y-3 relative">
-
-                  <button type="button" className="absolute top-2 right-2 text-red-500" onClick={() => setSlides(slides.filter((_, idx) => idx !== i))}>Xóa</button>
-
-                  <div>
-
-                    <label>Tiêu đề (Title)</label>
-
-                    <input className="input" value={s.title || ""} onChange={(e) => { const newS = [...slides]; newS[i].title = e.target.value; setSlides(newS); }} />
-
-                  </div>
-
-                  <div>
-
-                    <label>Mô tả (Subtitle)</label>
-
-                    <input className="input" value={s.subtitle || ""} onChange={(e) => { const newS = [...slides]; newS[i].subtitle = e.target.value; setSlides(newS); }} />
-
-                  </div>
-
-                  <div>
-
-                    <label>URL Ảnh</label>
-
-                    <input className="input" value={s.imageUrl || ""} onChange={(e) => { const newS = [...slides]; newS[i].imageUrl = e.target.value; setSlides(newS); }} />
-
-                  </div>
-
-                  <div>
-
-                    <label>Đường dẫn nút (Link CTA)</label>
-
-                    <input className="input" value={s.link || ""} onChange={(e) => { const newS = [...slides]; newS[i].link = e.target.value; setSlides(newS); }} />
-
-                  </div>
-
-                </div>
-
+            {/* Danh sách tabs các Slide */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, overflowX: "auto", paddingBottom: 12, borderBottom: "1px solid #e2e8f0", marginBottom: 20 }}>
+              {editingSlides.map((s, idx) => (
+                <button
+                  key={s.id || idx}
+                  type="button"
+                  onClick={() => setActiveSlideIdx(idx)}
+                  style={{
+                    padding: "8px 14px",
+                    borderRadius: 8,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    border: activeSlideIdx === idx ? "2px solid #f86522" : "1px solid #cbd5e1",
+                    background: activeSlideIdx === idx ? "#fff7ed" : "#fff",
+                    color: activeSlideIdx === idx ? "#ea580c" : "#475569",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <span>Slide {idx + 1}</span>
+                  {editingSlides.length > 1 && (
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirm(`Bạn có chắc muốn xóa Slide ${idx + 1}?`)) {
+                          const nextSlides = editingSlides.filter((_, i) => i !== idx);
+                          setEditingSlides(nextSlides);
+                          setActiveSlideIdx(Math.max(0, idx - 1));
+                        }
+                      }}
+                      style={{ color: "#ef4444", marginLeft: 4, cursor: "pointer", fontWeight: 800 }}
+                      title="Xóa slide này"
+                    >
+                      ✕
+                    </span>
+                  )}
+                </button>
               ))}
 
-              <button type="button" className="button outline" onClick={() => setSlides([...slides, { id: Date.now().toString(), title: "", subtitle: "", imageUrl: "", link: "" }])}>+ Thêm Slide</button>
-
+              <button
+                type="button"
+                onClick={() => {
+                  const newSlide: HomeSlideItem = {
+                    id: `slide-${Date.now()}`,
+                    subtitle: "KHÁM PHÁ TIẾP",
+                    heading1: "Hành trình mới",
+                    heading2: "Trải nghiệm vui",
+                    description: "Thêm những cung đường đẹp và địa điểm thú vị cùng Vi Vu Bike.",
+                    tags: ["Xe bảo dưỡng định kỳ", "Hỗ trợ 24/7"],
+                    imageUrl: "https://images.unsplash.com/photo-1558981806-ec527fa84c39?auto=format&fit=crop&w=2200&q=90",
+                  };
+                  const updated = [...editingSlides, newSlide];
+                  setEditingSlides(updated);
+                  setActiveSlideIdx(updated.length - 1);
+                }}
+                style={{
+                  padding: "8px 14px",
+                  borderRadius: 8,
+                  fontSize: 13,
+                  fontWeight: 700,
+                  border: "1px dashed #f86522",
+                  background: "#fff",
+                  color: "#ea580c",
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                + Thêm slide mới
+              </button>
             </div>
 
-            <div className="form-actions mt-6">
-
-              <button className="button secondary" onClick={() => setModalType(null)} disabled={saving}>Hủy</button>
-
-              <button className="button primary" onClick={() => handleSave("slides", slides)} disabled={saving}>{saving ? "Đang lưu..." : "Lưu thay đổi"}</button>
-
-            </div>
-
-          </div>
-
-        </div>
-
-      )}
-
-
-
-      {/* MODAL: ABOUT & POLICIES */}
-
-      {modalType === "about" && (
-
-        <div className="modal-overlay">
-
-          <div className="modal-content panel form-card" style={{ maxWidth: 800 }}>
-
-            <h3>Giới thiệu & Chính sách hỗ trợ</h3>
-
-            <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
-
-              <div>
-
-                <label>Văn bản giới thiệu (Intro)</label>
-
-                <textarea className="input" rows={3} value={about.introText} onChange={(e) => setAbout({ ...about, introText: e.target.value })} />
-
-              </div>
-
-              <div>
-
-                <label>Mô tả đầy đủ (Description)</label>
-
-                <textarea className="input" rows={5} value={about.fullDescription} onChange={(e) => setAbout({ ...about, fullDescription: e.target.value })} />
-
-              </div>
-
-              <div>
-
-                <label className="font-bold block mb-2">Chính sách / Cam kết</label>
-
-                {about.policies.map((p, i) => (
-
-                  <div key={i} className="flex gap-2 mb-2">
-
-                    <input className="input flex-1" value={p} onChange={(e) => { const newP = [...about.policies]; newP[i] = e.target.value; setAbout({ ...about, policies: newP }); }} />
-
-                    <button type="button" className="button secondary text-red-500" onClick={() => setAbout({ ...about, policies: about.policies.filter((_, idx) => idx !== i) })}>X</button>
-
+            {/* Chi tiết slide đang chọn */}
+            {currentSlide && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+                {/* Cột trái: Form nhập liệu */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                      Tiêu đề nhỏ (Badge / Subtitle)
+                    </label>
+                    <input
+                      className="input"
+                      style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                      placeholder="Ví dụ: KHÁM PHÁ PHỐ PHƯỜNG"
+                      value={currentSlide.subtitle}
+                      onChange={(e) => {
+                        const next = [...editingSlides];
+                        next[activeSlideIdx].subtitle = e.target.value;
+                        setEditingSlides(next);
+                      }}
+                    />
                   </div>
 
-                ))}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                        Tiêu đề lớn dòng 1 (Heading 1)
+                      </label>
+                      <input
+                        className="input"
+                        style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                        placeholder="Ví dụ: Đi chậm lại"
+                        value={currentSlide.heading1}
+                        onChange={(e) => {
+                          const next = [...editingSlides];
+                          next[activeSlideIdx].heading1 = e.target.value;
+                          setEditingSlides(next);
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#ea580c", marginBottom: 5 }}>
+                        Tiêu đề lớn dòng 2 (Màu cam)
+                      </label>
+                      <input
+                        className="input"
+                        style={{ width: "100%", padding: "9px 12px", border: "1px solid #f97316", borderRadius: 8, fontSize: 13 }}
+                        placeholder="Ví dụ: Cảm nhận nhiều hơn"
+                        value={currentSlide.heading2}
+                        onChange={(e) => {
+                          const next = [...editingSlides];
+                          next[activeSlideIdx].heading2 = e.target.value;
+                          setEditingSlides(next);
+                        }}
+                      />
+                    </div>
+                  </div>
 
-                <button type="button" className="button outline text-sm mt-2" onClick={() => setAbout({ ...about, policies: [...about.policies, ""] })}>+ Thêm chính sách</button>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                      Mô tả ngắn (Description)
+                    </label>
+                    <textarea
+                      className="input"
+                      rows={3}
+                      style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13, resize: "vertical" }}
+                      placeholder="Ví dụ: Chủ động lịch trình và khám phá Hà Nội theo cách của riêng bạn."
+                      value={currentSlide.description}
+                      onChange={(e) => {
+                        const next = [...editingSlides];
+                        next[activeSlideIdx].description = e.target.value;
+                        setEditingSlides(next);
+                      }}
+                    />
+                  </div>
 
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                      Tag nổi bật (Cách nhau bằng dấu phẩy)
+                    </label>
+                    <input
+                      className="input"
+                      style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                      placeholder="Ví dụ: Xe bảo dưỡng định kỳ, Hỗ trợ 24/7"
+                      value={currentSlide.tags.join(", ")}
+                      onChange={(e) => {
+                        const parsed = e.target.value.split(",").map((t) => t.trim()).filter(Boolean);
+                        const next = [...editingSlides];
+                        next[activeSlideIdx].tags = parsed;
+                        setEditingSlides(next);
+                      }}
+                    />
+                    <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                      {currentSlide.tags.map((tag, tIdx) => (
+                        <span key={tIdx} style={{ fontSize: 11, background: "#f1f5f9", color: "#334155", padding: "2px 8px", borderRadius: 6, fontWeight: 600 }}>
+                          ✓ {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                      Ảnh nền (Background Image)
+                    </label>
+                    <input
+                      className="input"
+                      style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13, marginBottom: 8 }}
+                      placeholder="Dán link ảnh URL (https://...)"
+                      value={currentSlide.imageUrl}
+                      onChange={(e) => {
+                        const next = [...editingSlides];
+                        next[activeSlideIdx].imageUrl = e.target.value;
+                        setEditingSlides(next);
+                      }}
+                    />
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <label
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "8px 14px",
+                          background: "#f1f5f9",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: 8,
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: "#334155",
+                          cursor: isUploadingImage ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        <span>{isUploadingImage ? "⏳ Đang chuyển Base64..." : "📁 Tải ảnh từ máy (Base64)"}</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          disabled={isUploadingImage}
+                          style={{ display: "none" }}
+                          onChange={(e) => handleImageFileChange(e, activeSlideIdx)}
+                        />
+                      </label>
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>
+                        Hỗ trợ URL hoặc Base64 (tự động tối ưu dung lượng)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Cột phải: Xem trước (Live Preview) mô phỏng Hero slide */}
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>
+                    Xem trước hiển thị thực tế (Live Preview)
+                  </label>
+                  <div
+                    style={{
+                      width: "100%",
+                      minHeight: 280,
+                      borderRadius: 12,
+                      overflow: "hidden",
+                      position: "relative",
+                      background: currentSlide.imageUrl
+                        ? `url("${currentSlide.imageUrl}") center/cover no-repeat`
+                        : "#1e293b",
+                      border: "1px solid #cbd5e1",
+                      display: "flex",
+                      flexDirection: "column",
+                      justifyContent: "center",
+                      padding: "24px 22px",
+                      boxShadow: "inset 0 0 100px rgba(0,0,0,0.5)",
+                    }}
+                  >
+                    {/* Dark gradient overlay */}
+                    <div
+                      style={{
+                        position: "absolute",
+                        inset: 0,
+                        background: "linear-gradient(90deg, rgba(10,13,17,0.92) 0%, rgba(10,13,17,0.6) 65%, rgba(10,13,17,0.2) 100%)",
+                        zIndex: 1,
+                      }}
+                    />
+
+                    {/* Content over image */}
+                    <div style={{ position: "relative", zIndex: 2, color: "#fff", maxWidth: "90%" }}>
+                      <p style={{ margin: "0 0 8px", fontSize: 10, fontWeight: 800, letterSpacing: ".15em", color: "#ff8d55" }}>
+                        {currentSlide.subtitle || "BADGE SUBTITLE"}
+                      </p>
+                      <h4 style={{ margin: "0 0 10px", fontSize: 24, fontWeight: 800, lineHeight: 1.15 }}>
+                        {currentSlide.heading1 || "Tiêu đề dòng 1"}<br />
+                        <span style={{ color: "#ff7838" }}>{currentSlide.heading2 || "Tiêu đề dòng 2"}</span>
+                      </h4>
+                      <p style={{ margin: "0 0 14px", fontSize: 12, color: "#e2e8f0", lineHeight: 1.5 }}>
+                        {currentSlide.description || "Mô tả ngắn của slide sẽ hiển thị tại đây."}
+                      </p>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                        {(currentSlide.tags.length > 0 ? currentSlide.tags : ["Xe bảo dưỡng định kỳ", "Hỗ trợ 24/7"]).map((tag, idx) => (
+                          <span
+                            key={idx}
+                            style={{
+                              fontSize: 10,
+                              background: "rgba(0,0,0,0.35)",
+                              border: "1px solid rgba(255,255,255,0.3)",
+                              padding: "3px 8px",
+                              borderRadius: 999,
+                              color: "#fff",
+                              fontWeight: 600,
+                            }}
+                          >
+                            ✓ {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>
+                      Đang sửa <b>Slide {activeSlideIdx + 1} / {editingSlides.length}</b>
+                    </span>
+                    {editingSlides.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Bạn có chắc muốn xóa Slide ${activeSlideIdx + 1}?`)) {
+                            const nextSlides = editingSlides.filter((_, i) => i !== activeSlideIdx);
+                            setEditingSlides(nextSlides);
+                            setActiveSlideIdx(Math.max(0, activeSlideIdx - 1));
+                          }
+                        }}
+                        style={{ border: 0, background: "transparent", color: "#ef4444", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                      >
+                        🗑️ Xóa slide này
+                      </button>
+                    )}
+                  </div>
+                </div>
               </div>
+            )}
 
+            {/* Actions Footer */}
+            <div className="form-actions mt-6" style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 24, paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setModalType(null)}
+                disabled={saving}
+                style={{ padding: "10px 18px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                className="button"
+                onClick={handleSaveSlides}
+                disabled={saving || isUploadingImage}
+                style={{ background: "#f86522", color: "#fff", padding: "10px 22px", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: "pointer" }}
+              >
+                {saving ? "Đang lưu Firestore..." : "Lưu thay đổi"}
+              </button>
             </div>
-
-            <div className="form-actions mt-6">
-
-              <button className="button secondary" onClick={() => setModalType(null)} disabled={saving}>Hủy</button>
-
-              <button className="button primary" onClick={() => handleSave("about", about)} disabled={saving}>{saving ? "Đang lưu..." : "Lưu thay đổi"}</button>
-
-            </div>
-
           </div>
-
         </div>
-
       )}
 
+      {/* ========================================================================= */}
+      {/* MODAL 2: GIỚI THIỆU VÀ CHÍNH SÁCH HỖ TRỢ */}
+      {/* ========================================================================= */}
+      {modalType === "about" && (
+        <div
+          className="modal-overlay"
+          onClick={() => setModalType(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: 20,
+          }}
+        >
+          <div
+            className="modal-content panel form-card"
+            style={{
+              maxWidth: 840,
+              width: "100%",
+              maxHeight: "92vh",
+              overflowY: "auto",
+              background: "#fff",
+              borderRadius: 16,
+              boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
+              padding: 28,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, borderBottom: "1px solid #f1f5f9", paddingBottom: 14 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#0f172a" }}>Giới thiệu và chính sách hỗ trợ</h3>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                  Chỉnh sửa văn bản giới thiệu thương hiệu và các thẻ chính sách hỗ trợ hiển thị trên trang chủ.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalType(null)}
+                style={{ border: 0, background: "#f1f5f9", borderRadius: "50%", width: 34, height: 34, cursor: "pointer", fontSize: 16, fontWeight: 700, color: "#64748b" }}
+              >
+                ✕
+              </button>
+            </div>
 
+            <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+              {/* PHẦN 1: GIỚI THIỆU */}
+              <div style={{ background: "#f8fafc", padding: 18, borderRadius: 12, border: "1px solid #e2e8f0" }}>
+                <h4 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 800, color: "#1e293b", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>📌 1. Phần Giới thiệu (Intro Section)</span>
+                </h4>
 
-      {/* MODAL: CONTACT */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                      Tiêu đề giới thiệu
+                    </label>
+                    <input
+                      className="input"
+                      style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                      placeholder="Ví dụ: Thuê xe chủ động cho mọi chuyến đi"
+                      value={editingAbout.title}
+                      onChange={(e) => setEditingAbout({ ...editingAbout, title: e.target.value })}
+                    />
+                  </div>
 
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                      Đoạn văn bản giới thiệu về Vi Vu Bike
+                    </label>
+                    <textarea
+                      className="input"
+                      rows={3}
+                      style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13, resize: "vertical" }}
+                      placeholder="Nhập nội dung giới thiệu chi tiết..."
+                      value={editingAbout.introText}
+                      onChange={(e) => setEditingAbout({ ...editingAbout, introText: e.target.value })}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* PHẦN 2: CHÍNH SÁCH HỖ TRỢ */}
+              <div style={{ background: "#f8fafc", padding: 18, borderRadius: 12, border: "1px solid #e2e8f0" }}>
+                <h4 style={{ margin: "0 0 12px", fontSize: 15, fontWeight: 800, color: "#1e293b", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>🛡️ 2. Khối Chính sách hỗ trợ (Policy Section)</span>
+                </h4>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                      Tiêu đề phần chính sách
+                    </label>
+                    <input
+                      className="input"
+                      style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                      placeholder="Ví dụ: Rõ ràng trước khi bạn bắt đầu chuyến đi"
+                      value={editingPolicies.heading}
+                      onChange={(e) => setEditingPolicies({ ...editingPolicies, heading: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 4 }}>
+                      Mô tả ngắn phần chính sách
+                    </label>
+                    <input
+                      className="input"
+                      style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                      placeholder="Ví dụ: Hỗ trợ 24/7 qua hotline, tư vấn lịch trình..."
+                      value={editingPolicies.subheading}
+                      onChange={(e) => setEditingPolicies({ ...editingPolicies, subheading: e.target.value })}
+                    />
+                  </div>
+                </div>
+
+                {/* Danh sách thẻ chính sách */}
+                <label style={{ display: "block", fontSize: 13, fontWeight: 800, color: "#334155", marginBottom: 8 }}>
+                  Danh sách các thẻ chính sách hỗ trợ ({editingPolicies.items.length})
+                </label>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {editingPolicies.items.map((item, idx) => (
+                    <div
+                      key={item.id || idx}
+                      style={{
+                        background: "#fff",
+                        border: "1px solid #e2e8f0",
+                        borderRadius: 10,
+                        padding: "14px 16px",
+                        position: "relative",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <span style={{ fontWeight: 800, fontSize: 12, color: "#ea580c" }}>
+                          THẺ CHÍNH SÁCH #{idx < 9 ? `0${idx + 1}` : idx + 1}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updatedItems = editingPolicies.items.filter((_, i) => i !== idx);
+                            setEditingPolicies({ ...editingPolicies, items: updatedItems });
+                          }}
+                          style={{ border: 0, background: "transparent", color: "#ef4444", fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+                        >
+                          ✕ Xóa
+                        </button>
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1.2fr 2fr", gap: 10 }}>
+                        <div>
+                          <input
+                            className="input"
+                            style={{ width: "100%", padding: "8px 10px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: 13, fontWeight: 700 }}
+                            placeholder="Tiêu đề (VD: Thủ tục nhanh)"
+                            value={item.title}
+                            onChange={(e) => {
+                              const newItems = [...editingPolicies.items];
+                              newItems[idx].title = e.target.value;
+                              setEditingPolicies({ ...editingPolicies, items: newItems });
+                            }}
+                          />
+                        </div>
+                        <div>
+                          <input
+                            className="input"
+                            style={{ width: "100%", padding: "8px 10px", border: "1px solid #cbd5e1", borderRadius: 6, fontSize: 13 }}
+                            placeholder="Nội dung chi tiết chính sách..."
+                            value={item.description}
+                            onChange={(e) => {
+                              const newItems = [...editingPolicies.items];
+                              newItems[idx].description = e.target.value;
+                              setEditingPolicies({ ...editingPolicies, items: newItems });
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const newItem: HomePolicyItem = {
+                        id: `p-${Date.now()}`,
+                        title: "Chính sách mới",
+                        description: "Nội dung chi tiết về chính sách hỗ trợ khách hàng.",
+                      };
+                      setEditingPolicies({
+                        ...editingPolicies,
+                        items: [...editingPolicies.items, newItem],
+                      });
+                    }}
+                    style={{
+                      padding: "10px",
+                      background: "#fff",
+                      border: "1px dashed #f86522",
+                      color: "#ea580c",
+                      borderRadius: 8,
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      marginTop: 4,
+                    }}
+                  >
+                    + Thêm thẻ chính sách hỗ trợ
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="form-actions mt-6" style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 24, paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setModalType(null)}
+                disabled={saving}
+                style={{ padding: "10px 18px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                className="button"
+                onClick={handleSaveAboutAndPolicies}
+                disabled={saving}
+                style={{ background: "#f86522", color: "#fff", padding: "10px 22px", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: "pointer" }}
+              >
+                {saving ? "Đang lưu Firestore..." : "Lưu thay đổi"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 3: THÔNG TIN LIÊN HỆ, HOTLINE, ĐỊA CHỈ */}
+      {/* ========================================================================= */}
       {modalType === "contact" && (
-
-        <div className="modal-overlay">
-
-          <div className="modal-content panel form-card" style={{ maxWidth: 600 }}>
-
-            <h3>Thông tin liên hệ</h3>
-
-            <div className="space-y-4">
-
+        <div
+          className="modal-overlay"
+          onClick={() => setModalType(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.7)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            padding: 20,
+          }}
+        >
+          <div
+            className="modal-content panel form-card"
+            style={{
+              maxWidth: 640,
+              width: "100%",
+              maxHeight: "92vh",
+              overflowY: "auto",
+              background: "#fff",
+              borderRadius: 16,
+              boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
+              padding: 28,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, borderBottom: "1px solid #f1f5f9", paddingBottom: 14 }}>
               <div>
-
-                <label>Hotline</label>
-
-                <input className="input" value={contact.hotline} onChange={(e) => setContact({ ...contact, hotline: e.target.value })} />
-
+                <h3 style={{ margin: 0, fontSize: 20, fontWeight: 800, color: "#0f172a" }}>Thông tin liên hệ, hotline, địa chỉ</h3>
+                <p style={{ margin: "4px 0 0", color: "#64748b", fontSize: 13 }}>
+                  Dữ liệu này hiển thị ở chân trang (Footer), hỗ trợ khách hàng và thông báo liên hệ.
+                </p>
               </div>
-
-              <div>
-
-                <label>Email</label>
-
-                <input className="input" type="email" value={contact.email} onChange={(e) => setContact({ ...contact, email: e.target.value })} />
-
-              </div>
-
-              <div>
-
-                <label>Địa chỉ</label>
-
-                <input className="input" value={contact.address} onChange={(e) => setContact({ ...contact, address: e.target.value })} />
-
-              </div>
-
-              <div>
-
-                <label>Thời gian làm việc</label>
-
-                <input className="input" value={contact.workingHours} onChange={(e) => setContact({ ...contact, workingHours: e.target.value })} />
-
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-
-                <div>
-
-                  <label>Link Facebook</label>
-
-                  <input className="input" value={contact.socialLinks.facebook} onChange={(e) => setContact({ ...contact, socialLinks: { ...contact.socialLinks, facebook: e.target.value } })} />
-
-                </div>
-
-                <div>
-
-                  <label>Link Zalo</label>
-
-                  <input className="input" value={contact.socialLinks.zalo} onChange={(e) => setContact({ ...contact, socialLinks: { ...contact.socialLinks, zalo: e.target.value } })} />
-
-                </div>
-
-              </div>
-
+              <button
+                type="button"
+                onClick={() => setModalType(null)}
+                style={{ border: 0, background: "#f1f5f9", borderRadius: "50%", width: 34, height: 34, cursor: "pointer", fontSize: 16, fontWeight: 700, color: "#64748b" }}
+              >
+                ✕
+              </button>
             </div>
 
-            <div className="form-actions mt-6">
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                    Số điện thoại Hotline
+                  </label>
+                  <input
+                    className="input"
+                    style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                    placeholder="Ví dụ: 0900 123 456"
+                    value={editingContact.hotline}
+                    onChange={(e) => setEditingContact({ ...editingContact, hotline: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                    Email hỗ trợ
+                  </label>
+                  <input
+                    className="input"
+                    type="email"
+                    style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                    placeholder="Ví dụ: support@vivubike.vn"
+                    value={editingContact.email}
+                    onChange={(e) => setEditingContact({ ...editingContact, email: e.target.value })}
+                  />
+                </div>
+              </div>
 
-              <button className="button secondary" onClick={() => setModalType(null)} disabled={saving}>Hủy</button>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                  Địa chỉ cơ sở chính
+                </label>
+                <input
+                  className="input"
+                  style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                  placeholder="Ví dụ: 96A Trần Phú, Hà Đông, Hà Nội"
+                  value={editingContact.address}
+                  onChange={(e) => setEditingContact({ ...editingContact, address: e.target.value })}
+                />
+              </div>
 
-              <button className="button primary" onClick={() => handleSave("contact", contact)} disabled={saving}>{saving ? "Đang lưu..." : "Lưu thay đổi"}</button>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                  Giờ làm việc / Thời gian mở cửa hỗ trợ
+                </label>
+                <input
+                  className="input"
+                  style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                  placeholder="Ví dụ: 07:00 - 21:00 hàng ngày"
+                  value={editingContact.workingHours}
+                  onChange={(e) => setEditingContact({ ...editingContact, workingHours: e.target.value })}
+                />
+              </div>
 
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                    Link Facebook
+                  </label>
+                  <input
+                    className="input"
+                    style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                    placeholder="Ví dụ: https://facebook.com/vivubike"
+                    value={editingContact.socialLinks.facebook}
+                    onChange={(e) => setEditingContact({
+                      ...editingContact,
+                      socialLinks: { ...editingContact.socialLinks, facebook: e.target.value }
+                    })}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 5 }}>
+                    Link Zalo
+                  </label>
+                  <input
+                    className="input"
+                    style={{ width: "100%", padding: "9px 12px", border: "1px solid #cbd5e1", borderRadius: 8, fontSize: 13 }}
+                    placeholder="Ví dụ: https://zalo.me/0900123456"
+                    value={editingContact.socialLinks.zalo}
+                    onChange={(e) => setEditingContact({
+                      ...editingContact,
+                      socialLinks: { ...editingContact.socialLinks, zalo: e.target.value }
+                    })}
+                  />
+                </div>
+              </div>
             </div>
 
+            {/* Actions */}
+            <div className="form-actions mt-6" style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 24, paddingTop: 16, borderTop: "1px solid #f1f5f9" }}>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setModalType(null)}
+                disabled={saving}
+                style={{ padding: "10px 18px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer" }}
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                className="button"
+                onClick={handleSaveContact}
+                disabled={saving}
+                style={{ background: "#f86522", color: "#fff", padding: "10px 22px", borderRadius: 8, fontSize: 13, fontWeight: 800, cursor: "pointer" }}
+              >
+                {saving ? "Đang lưu Firestore..." : "Lưu thay đổi"}
+              </button>
+            </div>
           </div>
-
         </div>
-
       )}
-
     </>
-
   );
-
 }

@@ -2,14 +2,72 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "firebase/auth";
-import { collection, doc, getDoc, onSnapshot, updateDoc } from "firebase/firestore";
+import { collection, doc, getDoc, onSnapshot, updateDoc, serverTimestamp } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 import { auth, db } from "../../lib/firebase";
+import { fileToBase64 } from "@/lib/home-content";
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 type VerifStatus = "pending" | "needs_update" | "staff_approved" | "rejected" | "approved" | "not_submitted";
 type Customer = { id: string; fullName: string; email: string; phone: string; verificationStatus: VerifStatus; staffName: string; staffNote: string };
 type Detail = { customer: Customer & { identityNumber: string }; documents: Record<string, string> };
+
+export type HandoverDetails = {
+  plateNumber?: string;
+  odometer: number;
+  fuelLevel?: string;
+  checklist: {
+    thanVo: string;
+    phanh: string;
+    denXiNhan: string;
+    guong: string;
+    coi: string;
+  };
+  accessories: {
+    muBaoHiem: boolean;
+    aoMua: boolean;
+    giayTo: boolean;
+  };
+  images: {
+    front: string;
+    back: string;
+    left: string;
+    right: string;
+  };
+  note?: string;
+  handoverAt?: string;
+  staffId?: string;
+  staffName?: string;
+};
+
+export type ReturnDetails = {
+  odometer: number;
+  fuelLevel?: string;
+  checklist: {
+    thanVo: string;
+    phanh: string;
+    denXiNhan: string;
+    guong: string;
+    coi: string;
+  };
+  accessories: {
+    muBaoHiem: boolean;
+    aoMua: boolean;
+    giayTo: boolean;
+  };
+  images: {
+    front: string;
+    back: string;
+    left: string;
+    right: string;
+  };
+  kmDriven?: number;
+  additionalFee?: number;
+  feeReason?: string;
+  returnedAt?: string;
+  staffId?: string;
+  staffName?: string;
+};
 
 type RentalStatus = "pending_approval" | "ready_for_pickup" | "in_progress" | "returning" | "completed";
 type Rental = {
@@ -17,6 +75,7 @@ type Rental = {
   customerId?: string;
   customerName: string; customerEmail: string; customerPhone: string;
   vehicleName: string; licensePlate: string;
+  plateNumber?: string;
   startDate: string; endDate: string;
   actualPickupAt?: string; actualReturnAt?: string;
   totalAmount: number; depositAmount: number;
@@ -26,6 +85,8 @@ type Rental = {
   isGuest?: boolean;
   customerInfo?: { fullName: string; phone: string; email: string };
   verificationDocuments?: { idCardFrontUrl: string; idCardBackUrl: string; driverLicenseFrontUrl: string; driverLicenseBackUrl: string };
+  handoverDetails?: HandoverDetails;
+  returnDetails?: ReturnDetails;
 };
 
 type View = "overview" | "verification" | "rentals" | "profile";
@@ -52,7 +113,10 @@ const STAGES: Stage[] = [
 const verifLabel = (s: string) => ({ pending: "Chờ kiểm tra", needs_update: "Cần bổ sung", staff_approved: "Chờ Admin duyệt", approved: "Đã xác minh", rejected: "Đã từ chối", not_submitted: "Chưa gửi" }[s] || s);
 const initials   = (name: string) => name.split(" ").filter(Boolean).slice(-2).map(p => p[0]).join("").toUpperCase() || "NV";
 const money      = (n: number) => n.toLocaleString("vi-VN") + "₫";
-const stageOf    = (r: Rental): RentalStatus => (STAGES.some(s => s.key === r.status) ? r.status as RentalStatus : "pending_approval");
+const stageOf = (r: Rental): RentalStatus => {
+  if (r.status === "renting") return "in_progress";
+  return (STAGES.some(s => s.key === r.status) ? r.status as RentalStatus : "pending_approval");
+};
 
 /** Parse an ISO string or Firestore Timestamp-like object to Date (or null) */
 const parseDate = (v: unknown): Date | null => {
@@ -164,6 +228,56 @@ export default function StaffPage() {
   const [returnSaving, setReturnSaving] = useState(false);
   const [showBill, setShowBill] = useState(false);
   const [profileSaving, setProfileSaving] = useState(false);
+
+  // ── State Biên bản bàn giao xe ──
+  const [handoverModal, setHandoverModal] = useState<Rental | null>(null);
+  const [handoverPlate, setHandoverPlate] = useState("");
+  const [handoverOdo, setHandoverOdo] = useState("");
+  const [handoverChecklist, setHandoverChecklist] = useState({
+    thanVo: "good",
+    phanh: "good",
+    denXiNhan: "good",
+    guong: "good",
+    coi: "good",
+  });
+  const [handoverAccessories, setHandoverAccessories] = useState({
+    muBaoHiem: true,
+    aoMua: true,
+    giayTo: true,
+  });
+  const [handoverNote, setHandoverNote] = useState("");
+  const [handoverImages, setHandoverImages] = useState({
+    front: "",
+    back: "",
+    left: "",
+    right: "",
+  });
+  const [handoverSaving, setHandoverSaving] = useState(false);
+
+  // ── State Biên bản tiếp nhận & Đối soát trả xe ──
+  const [returnCheckModal, setReturnCheckModal] = useState<Rental | null>(null);
+  const [returnOdo, setReturnOdo] = useState("");
+  const [returnChecklist, setReturnChecklist] = useState({
+    thanVo: "good",
+    phanh: "good",
+    denXiNhan: "good",
+    guong: "good",
+    coi: "good",
+  });
+  const [returnAccessories, setReturnAccessories] = useState({
+    muBaoHiem: true,
+    aoMua: true,
+    giayTo: true,
+  });
+  const [returnImages, setReturnImages] = useState({
+    front: "",
+    back: "",
+    left: "",
+    right: "",
+  });
+
+  // ── Xem ảnh phóng to (Lightbox) ──
+  const [previewImage, setPreviewImage] = useState<{ url: string; title: string } | null>(null);
   
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -218,7 +332,8 @@ export default function StaffPage() {
         customerEmail: String(data.customerEmail || data.guestEmail || data.customerInfo?.email || ""),
         customerPhone: String(data.customerPhone || data.guestPhone || data.phone || data.customerInfo?.phone || ""),
         vehicleName: String(data.vehicleName || "Xe thuê"),
-        licensePlate: String(data.licensePlate || ""),
+        licensePlate: String(data.licensePlate || data.plateNumber || data.handoverDetails?.plateNumber || ""),
+        plateNumber: data.plateNumber ? String(data.plateNumber) : (data.handoverDetails?.plateNumber ? String(data.handoverDetails.plateNumber) : undefined),
         startDate: String(data.startDate || ""),
         endDate: String(data.endDate || ""),
         actualPickupAt: data.actualPickupAt ? String(data.actualPickupAt) : undefined,
@@ -232,6 +347,8 @@ export default function StaffPage() {
         isGuest: Boolean(data.isGuest),
         customerInfo: data.customerInfo,
         verificationDocuments: data.verificationDocuments,
+        handoverDetails: data.handoverDetails,
+        returnDetails: data.returnDetails,
       };
     }));
   }, () => setLoadError("Tài khoản Staff chưa có quyền đọc đơn thuê. Hãy Publish Firestore Rules mới.")), []);
@@ -370,6 +487,222 @@ export default function StaffPage() {
     finally { setActionLoading(null); }
   };
 
+  // ── Handover Modal Handlers ──
+  const openHandoverModal = (rental: Rental) => {
+    setHandoverModal(rental);
+    setHandoverPlate(rental.handoverDetails?.plateNumber || rental.plateNumber || rental.licensePlate || "");
+    setHandoverOdo(rental.handoverDetails?.odometer ? String(rental.handoverDetails.odometer) : "");
+    setHandoverChecklist(rental.handoverDetails?.checklist || {
+      thanVo: "good",
+      phanh: "good",
+      denXiNhan: "good",
+      guong: "good",
+      coi: "good",
+    });
+    setHandoverAccessories(rental.handoverDetails?.accessories || {
+      muBaoHiem: true,
+      aoMua: true,
+      giayTo: true,
+    });
+    setHandoverNote(rental.handoverDetails?.note || "");
+    setHandoverImages(rental.handoverDetails?.images || {
+      front: "",
+      back: "",
+      left: "",
+      right: "",
+    });
+  };
+
+  const handleUploadHandoverImage = async (e: React.ChangeEvent<HTMLInputElement>, side: "front" | "back" | "left" | "right") => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      notify("Dung lượng file lớn hơn 10MB. Vui lòng chọn ảnh nhỏ hơn.");
+      return;
+    }
+    try {
+      const base64 = await fileToBase64(file);
+      setHandoverImages(prev => ({ ...prev, [side]: base64 }));
+      notify(`Đã tải ảnh ${side === "front" ? "mặt trước" : side === "back" ? "mặt sau" : side === "left" ? "sườn trái" : "sườn phải"} thành công!`);
+    } catch (err) {
+      console.error("Lỗi fileToBase64:", err);
+      notify("Không thể đọc file ảnh. Vui lòng thử lại.");
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  const submitHandover = async () => {
+    if (!handoverModal) return;
+    if (!handoverPlate.trim()) {
+      notify("Vui lòng nhập biển số xe thực tế bàn giao cho khách!");
+      return;
+    }
+    const odoNum = Number(handoverOdo);
+    if (!handoverOdo.trim() || isNaN(odoNum) || odoNum < 0) {
+      notify("Vui lòng nhập số Km (ODD) hiện tại của xe.");
+      return;
+    }
+    if (!handoverImages.front || !handoverImages.back || !handoverImages.left || !handoverImages.right) {
+      notify("Vui lòng tải đủ 4 ảnh chụp xe 4 phía (Mặt trước, mặt sau, sườn trái, sườn phải) trước khi bàn giao!");
+      return;
+    }
+
+    const cleanPlate = handoverPlate.trim().toUpperCase();
+    setHandoverSaving(true);
+    try {
+      const handoverData: HandoverDetails = {
+        plateNumber: cleanPlate,
+        odometer: odoNum,
+        checklist: handoverChecklist,
+        accessories: handoverAccessories,
+        images: handoverImages,
+        note: handoverNote.trim(),
+        handoverAt: new Date().toISOString(),
+        staffId: auth.currentUser?.uid || "",
+        staffName: staff.fullName,
+      };
+
+      await updateDoc(doc(db, "bookings", handoverModal.id), {
+        status: "in_progress",
+        actualPickupAt: new Date().toISOString(),
+        plateNumber: cleanPlate,
+        licensePlate: cleanPlate,
+        handoverDetails: handoverData,
+        staffId: auth.currentUser?.uid || "",
+        staffName: staff.fullName,
+        updatedAt: serverTimestamp(),
+      });
+
+      notify(`Đã lập biên bản bàn giao xe (${cleanPlate})! Phiếu ${handoverModal.code} đã chuyển sang Đang thuê.`);
+      setHandoverModal(null);
+      setActiveStage("in_progress");
+    } catch (err) {
+      console.error("Lỗi khi lưu bàn giao:", err);
+      notify("Không thể lưu biên bản bàn giao xe. Hãy thử lại.");
+    } finally {
+      setHandoverSaving(false);
+    }
+  };
+
+  // ── Return Check Modal Handlers ──
+  const openReturnCheckModal = (rental: Rental) => {
+    setReturnCheckModal(rental);
+    const initialOdo = rental.returnDetails?.odometer
+      ? String(rental.returnDetails.odometer)
+      : "";
+    setReturnOdo(initialOdo);
+    setReturnChecklist(rental.returnDetails?.checklist || {
+      thanVo: "good",
+      phanh: "good",
+      denXiNhan: "good",
+      guong: "good",
+      coi: "good",
+    });
+    setReturnAccessories(rental.returnDetails?.accessories || {
+      muBaoHiem: true,
+      aoMua: true,
+      giayTo: true,
+    });
+    setReturnImages(rental.returnDetails?.images || {
+      front: "",
+      back: "",
+      left: "",
+      right: "",
+    });
+    setAdditionalFee(rental.additionalFee || 0);
+    setFeeReason(rental.feeReason || "");
+  };
+
+  const handleUploadReturnImage = async (e: React.ChangeEvent<HTMLInputElement>, side: "front" | "back" | "left" | "right") => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 10 * 1024 * 1024) {
+      notify("Dung lượng file lớn hơn 10MB. Vui lòng chọn ảnh nhỏ hơn.");
+      return;
+    }
+    try {
+      const base64 = await fileToBase64(file);
+      setReturnImages(prev => ({ ...prev, [side]: base64 }));
+      notify(`Đã tải ảnh lúc nhận xe (${side === "front" ? "mặt trước" : side === "back" ? "mặt sau" : side === "left" ? "sườn trái" : "sườn phải"})!`);
+    } catch (err) {
+      console.error("Lỗi fileToBase64:", err);
+      notify("Không thể đọc file ảnh. Vui lòng thử lại.");
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  const submitReturnCheck = async () => {
+    if (!returnCheckModal) return;
+    const odoNum = Number(returnOdo);
+    if (!returnOdo.trim() || isNaN(odoNum) || odoNum < 0) {
+      notify("Vui lòng nhập số Km (ODD) lúc trả xe.");
+      return;
+    }
+    const startOdo = returnCheckModal.handoverDetails?.odometer || 0;
+    if (startOdo > 0 && odoNum < startOdo) {
+      notify(`Số Km lúc trả (${odoNum}) không thể nhỏ hơn số Km lúc nhận (${startOdo})!`);
+      return;
+    }
+    if (additionalFee > 0 && !feeReason.trim()) {
+      notify("Vui lòng nhập lý do phát sinh phụ phí!");
+      return;
+    }
+
+    setReturnSaving(true);
+    try {
+      const kmDriven = startOdo > 0 ? Math.max(0, odoNum - startOdo) : 0;
+      const finalAmount = returnCheckModal.totalAmount + additionalFee;
+
+      const returnData: ReturnDetails = {
+        odometer: odoNum,
+        checklist: returnChecklist,
+        accessories: returnAccessories,
+        images: returnImages,
+        kmDriven,
+        additionalFee,
+        feeReason: feeReason.trim(),
+        returnedAt: new Date().toISOString(),
+        staffId: auth.currentUser?.uid || "",
+        staffName: staff.fullName,
+      };
+
+      await updateDoc(doc(db, "bookings", returnCheckModal.id), {
+        status: "completed",
+        actualReturnAt: new Date().toISOString(),
+        returnedAt: new Date().toISOString(),
+        returnDetails: returnData,
+        additionalFee,
+        feeReason: feeReason.trim(),
+        finalAmount,
+        totalBill: finalAmount,
+        staffId: auth.currentUser?.uid || "",
+        staffName: staff.fullName,
+        updatedAt: serverTimestamp(),
+      });
+
+      notify(`Phiếu ${returnCheckModal.code} đã hoàn tất nghiệm thu đối soát trả xe.`);
+      const completedRental: Rental = {
+        ...returnCheckModal,
+        status: "completed",
+        additionalFee,
+        feeReason: feeReason.trim(),
+        actualReturnAt: new Date().toISOString(),
+        returnDetails: returnData,
+      };
+      setReturnCheckModal(null);
+      setReturnModal(completedRental);
+      setShowBill(true);
+      setActiveStage("completed");
+    } catch (err) {
+      console.error("Lỗi khi tiếp nhận trả xe:", err);
+      notify("Không thể lưu biên bản tiếp nhận trả xe.");
+    } finally {
+      setReturnSaving(false);
+    }
+  };
+
   const openReturnModal = (rental: Rental) => {
     setReturnModal(rental);
     if (rental.status === "completed") {
@@ -398,7 +731,7 @@ export default function StaffPage() {
     if (!returnModal) return;
     setReturnSaving(true);
     try {
-      const finalAmount = returnModal.totalAmount + additionalFee - returnModal.depositAmount;
+      const finalAmount = returnModal.totalAmount + additionalFee;
       await updateDoc(doc(db, "bookings", returnModal.id), {
         status: "completed",
         additionalFee,
@@ -633,16 +966,53 @@ export default function StaffPage() {
                       <div><b>{r.totalAmount ? money(r.totalAmount) : "—"}</b></div>
                       <div
                         className={`rental-actions${activeStage === "pending_approval" ? " pending-rental-actions" : ""}`}
-                        style={activeStage === "pending_approval" ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 } : undefined}
+                        style={
+                          activeStage === "pending_approval"
+                            ? { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 8 }
+                            : activeStage === "completed"
+                            ? { display: "flex", flexDirection: "column", alignItems: "flex-end", width: "100%" }
+                            : undefined
+                        }
                       >
-                        {/* Stage returning: open settlement modal instead of direct advance */}
+                        {/* Stage returning: open return check modal */}
                         {activeStage === "returning" ? (
                           <button
                             className="btn-action"
                             disabled={actionLoading === r.id}
-                            onClick={() => openReturnModal(r)}
+                            onClick={() => openReturnCheckModal(r)}
+                            style={{ background: "#2563eb" }}
                           >
-                            Kiểm tra & Quyết toán
+                            🔍 Đối soát & Quyết toán
+                          </button>
+                        ) : activeStage === "in_progress" ? (
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                            <button
+                              className="btn-action"
+                              disabled={actionLoading === r.id}
+                              onClick={() => openReturnCheckModal(r)}
+                              style={{ background: "#2563eb" }}
+                            >
+                              {actionLoading === r.id ? "…" : "🔍 Tiếp nhận trả xe"}
+                            </button>
+                            {r.handoverDetails && (
+                              <button
+                                className="btn-action"
+                                style={{ background: "#f8fafc", border: "1px solid #cbd5e1", color: "#475569", fontSize: 11, padding: "7px 10px" }}
+                                onClick={() => openHandoverModal(r)}
+                                title="Xem lại biên bản bàn giao xe"
+                              >
+                                📋 BB giao xe
+                              </button>
+                            )}
+                          </div>
+                        ) : activeStage === "ready_for_pickup" ? (
+                          <button
+                            className="btn-action"
+                            disabled={actionLoading === r.id}
+                            onClick={() => openHandoverModal(r)}
+                            style={{ background: "#f26522" }}
+                          >
+                            {actionLoading === r.id ? "…" : "📋 Xác nhận giao xe"}
                           </button>
                         ) : activeStage === "pending_approval" ? (
                           <button
@@ -681,15 +1051,96 @@ export default function StaffPage() {
                           </button>
                         )}
                         {activeStage === "completed" && (
-                          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                          <div
+                            className="completed-action-grid"
+                            style={{
+                              display: "grid",
+                              gridTemplateColumns: "auto auto",
+                              columnGap: "10px",
+                              rowGap: "5px",
+                              alignItems: "center",
+                              justifyContent: "end",
+                              justifyItems: "start",
+                            }}
+                          >
+                            {/* Hàng 1 - Cột 1: Hóa đơn */}
                             <button
-                              className="btn-action"
-                              style={{ background: "transparent", color: "#2563eb", fontWeight: 600, padding: 0 }}
+                              className="btn-action whitespace-nowrap"
+                              style={{
+                                background: "transparent",
+                                color: "#2563eb",
+                                fontWeight: 700,
+                                padding: 0,
+                                border: "none",
+                                cursor: "pointer",
+                                fontSize: "12px",
+                                whiteSpace: "nowrap",
+                                textAlign: "left",
+                              }}
                               onClick={() => openReturnModal(r)}
+                              title="Xem hóa đơn quyết toán"
                             >
-                              👁 Chi tiết
+                              🧾 Hóa đơn
                             </button>
-                            <span className="badge approved">Hoàn thành</span>
+
+                            {/* Hàng 1 - Cột 2: Hoàn thành */}
+                            <span
+                              className="badge approved whitespace-nowrap"
+                              style={{ whiteSpace: "nowrap", textAlign: "left" }}
+                            >
+                              Hoàn thành
+                            </span>
+
+                            {/* Hàng 2 (nếu có biên bản giao hoặc trả): Cột 1 là BB giao, Cột 2 là BB trả */}
+                            {(r.handoverDetails || r.returnDetails) && (
+                              <>
+                                {r.handoverDetails ? (
+                                  <button
+                                    className="btn-action whitespace-nowrap"
+                                    style={{
+                                      background: "transparent",
+                                      color: "#f26522",
+                                      fontWeight: 700,
+                                      padding: 0,
+                                      border: "none",
+                                      cursor: "pointer",
+                                      fontSize: "12px",
+                                      whiteSpace: "nowrap",
+                                      textAlign: "left",
+                                    }}
+                                    onClick={() => openHandoverModal(r)}
+                                    title="Xem lại biên bản bàn giao xe"
+                                  >
+                                    📋 BB giao
+                                  </button>
+                                ) : (
+                                  <span />
+                                )}
+
+                                {r.returnDetails ? (
+                                  <button
+                                    className="btn-action whitespace-nowrap"
+                                    style={{
+                                      background: "transparent",
+                                      color: "#16a34a",
+                                      fontWeight: 700,
+                                      padding: 0,
+                                      border: "none",
+                                      cursor: "pointer",
+                                      fontSize: "12px",
+                                      whiteSpace: "nowrap",
+                                      textAlign: "left",
+                                    }}
+                                    onClick={() => openReturnCheckModal(r)}
+                                    title="Xem lại biên bản đối soát trả xe"
+                                  >
+                                    🔍 BB trả
+                                  </button>
+                                ) : (
+                                  <span />
+                                )}
+                              </>
+                            )}
                           </div>
                         )}
                       </div>
@@ -856,9 +1307,8 @@ export default function StaffPage() {
               <div className="settlement-box">
                 <p className="return-section-title">🧾 Tổng kết sơ bộ</p>
                 <div className="settlement-row"><span>Tiền thuê gốc</span><b>{money(returnModal.totalAmount)}</b></div>
-                {returnModal.depositAmount > 0 && <div className="settlement-row"><span>Tiền cọc đã thu</span><b style={{ color: "#15834b" }}>- {money(returnModal.depositAmount)}</b></div>}
                 {additionalFee > 0 && <div className="settlement-row"><span>Phụ phí phát sinh</span><b style={{ color: "#c55720" }}>+ {money(additionalFee)}</b></div>}
-                <div className="settlement-row total"><span>Tổng phải thu</span><b>{money(returnModal.totalAmount + additionalFee - returnModal.depositAmount)}</b></div>
+                <div className="settlement-row total"><span>Tổng thanh toán</span><b>{money(returnModal.totalAmount + additionalFee)}</b></div>
               </div>
 
               <div className="decision">
@@ -918,12 +1368,6 @@ export default function StaffPage() {
                       <td>Tiền thuê xe ({returnModal.vehicleName})</td>
                       <td className="bill-amount">{money(returnModal.totalAmount)}</td>
                     </tr>
-                    {returnModal.depositAmount > 0 && (
-                      <tr className="bill-row-deduct">
-                        <td>Tiền cọc ban đầu (giảm trừ)</td>
-                        <td className="bill-amount">- {money(returnModal.depositAmount)}</td>
-                      </tr>
-                    )}
                     {additionalFee > 0 && (
                       <>
                         <tr className="bill-row-penalty">
@@ -942,13 +1386,12 @@ export default function StaffPage() {
 
                 {/* Grand total */}
                 {(() => {
-                  const grand = returnModal.totalAmount + additionalFee - returnModal.depositAmount;
-                  const isRefund = grand < 0;
+                  const grand = returnModal.totalAmount + additionalFee;
                   const isCompleted = returnModal.status === "completed";
                   return (
-                    <div className={`bill-grand${isRefund && !isCompleted ? " refund" : ""}${isCompleted ? " completed" : ""}`}>
-                      <span>{isCompleted ? "ĐÃ QUYẾT TOÁN" : (isRefund ? "TIỀN HOÀN LẠI CHO KHÁCH" : "SỐ TIỀN CẦN THANH TOÁN")}</span>
-                      <b>{money(Math.abs(grand))}</b>
+                    <div className={`bill-grand${isCompleted ? " completed" : ""}`}>
+                      <span>{isCompleted ? "ĐÃ QUYẾT TOÁN" : "SỐ TIỀN CẦN THANH TOÁN"}</span>
+                      <b>{money(grand)}</b>
                     </div>
                   );
                 })()}
@@ -1069,6 +1512,588 @@ export default function StaffPage() {
               </button>
             </div>
           </section>
+        </div>
+      )}
+
+      {/* ── Modal 1: Biên bản bàn giao xe cho khách ── */}
+      {handoverModal && (
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget && !handoverSaving) setHandoverModal(null); }}>
+          <section className="modal" style={{ maxWidth: 860, borderRadius: 12 }}>
+            <div className="modal-head">
+              <div>
+                <p>BIÊN BẢN BÀN GIAO XE CHO KHÁCH</p>
+                <h2>{handoverModal.code} — {handoverModal.vehicleName}</h2>
+              </div>
+              <button onClick={() => !handoverSaving && setHandoverModal(null)}>×</button>
+            </div>
+
+            {/* 1. Tóm tắt thông tin */}
+            <div className="customer-info" style={{ background: "#f8fafc", padding: "14px 18px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+              <span>Mã phiếu: <b>{handoverModal.code}</b></span>
+              <span>Khách hàng: <b>{handoverModal.customerInfo?.fullName || handoverModal.customerName}</b></span>
+              <span>Điện thoại: <b>{handoverModal.customerInfo?.phone || handoverModal.customerPhone || "—"}</b></span>
+              <span>Dòng xe: <b>{handoverModal.vehicleName}</b></span>
+              <span>Lịch thuê: <b>{fmtD(handoverModal.startDate)} — {fmtD(handoverModal.endDate)}</b></span>
+            </div>
+
+            {/* 2. Checklist tình trạng xe */}
+            <div className="return-section" style={{ marginTop: 18 }}>
+              <p className="return-section-title">⚙️ Thông tin xe & Tình trạng kỹ thuật trước khi bàn giao</p>
+              
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+                <label className="return-field">
+                  <span>Biển số xe bàn giao <span className="required">*</span></span>
+                  <input
+                    type="text"
+                    placeholder="Ví dụ: 29B1-123.45"
+                    value={handoverPlate}
+                    onChange={(e) => setHandoverPlate(e.target.value.toUpperCase())}
+                    className="fee-input"
+                    style={{ textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.5px" }}
+                  />
+                  <small className="field-hint">Nhập biển số xe thực tế đang bàn giao cho khách.</small>
+                </label>
+
+                <label className="return-field">
+                  <span>Số Km hiện tại trên đồng hồ (ODD / ODO) <span className="required">*</span></span>
+                  <input
+                    type="number"
+                    min={0}
+                    placeholder="Ví dụ: 12500"
+                    value={handoverOdo}
+                    onChange={(e) => setHandoverOdo(e.target.value)}
+                    className="fee-input"
+                  />
+                  <small className="field-hint">Nhập chỉ số km thực tế hiển thị trên đồng hồ xe.</small>
+                </label>
+              </div>
+
+              {/* Bảng checklist các bộ phận */}
+              <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#475569" }}>Kiểm tra các bộ phận cốt lõi:</span>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+                  {[
+                    { key: "thanVo", label: "Thân vỏ xe", good: "Tốt / Không xước", bad: "Có xước nhẹ" },
+                    { key: "phanh", label: "Phanh trước & sau", good: "Ăn tốt, an toàn", bad: "Cần chú ý" },
+                    { key: "denXiNhan", label: "Đèn pha & Xi nhan", good: "Sáng đủ, bình thường", bad: "Chập chờn" },
+                    { key: "guong", label: "Gương chiếu hậu", good: "Đủ 02 gương chuẩn", bad: "Thiếu / nứt vỡ" },
+                    { key: "coi", label: "Còi xe", good: "Kêu to rõ", bad: "Hơi nhỏ" },
+                  ].map((item) => (
+                    <div key={item.key} style={{ border: "1px solid #e2e8f0", padding: "10px 12px", borderRadius: 8, background: "#fff" }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>{item.label}</div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          type="button"
+                          onClick={() => setHandoverChecklist({ ...handoverChecklist, [item.key]: "good" })}
+                          style={{
+                            flex: 1, padding: "5px 8px", fontSize: 11, fontWeight: 700, borderRadius: 6,
+                            border: handoverChecklist[item.key as keyof typeof handoverChecklist] === "good" ? "1.5px solid #16a34a" : "1px solid #cbd5e1",
+                            background: handoverChecklist[item.key as keyof typeof handoverChecklist] === "good" ? "#f0fdf4" : "#fff",
+                            color: handoverChecklist[item.key as keyof typeof handoverChecklist] === "good" ? "#15803d" : "#64748b",
+                            cursor: "pointer",
+                          }}
+                        >
+                          ✓ {item.good}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setHandoverChecklist({ ...handoverChecklist, [item.key]: "warning" })}
+                          style={{
+                            flex: 1, padding: "5px 8px", fontSize: 11, fontWeight: 700, borderRadius: 6,
+                            border: handoverChecklist[item.key as keyof typeof handoverChecklist] === "warning" ? "1.5px solid #ea580c" : "1px solid #cbd5e1",
+                            background: handoverChecklist[item.key as keyof typeof handoverChecklist] === "warning" ? "#fff7ed" : "#fff",
+                            color: handoverChecklist[item.key as keyof typeof handoverChecklist] === "warning" ? "#c2410c" : "#64748b",
+                            cursor: "pointer",
+                          }}
+                        >
+                          ⚠️ {item.bad}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Phụ kiện đi kèm */}
+              <div style={{ marginTop: 16 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#475569", display: "block", marginBottom: 8 }}>Phụ kiện bàn giao cho khách:</span>
+                <div className="check-grid">
+                  <label className="check-item">
+                    <input
+                      type="checkbox"
+                      checked={handoverAccessories.muBaoHiem}
+                      onChange={(e) => setHandoverAccessories({ ...handoverAccessories, muBaoHiem: e.target.checked })}
+                    />
+                    02 Mũ bảo hiểm đạt chuẩn Vi Vu Bike
+                  </label>
+                  <label className="check-item">
+                    <input
+                      type="checkbox"
+                      checked={handoverAccessories.aoMua}
+                      onChange={(e) => setHandoverAccessories({ ...handoverAccessories, aoMua: e.target.checked })}
+                    />
+                    01 Áo mưa tiện dụng
+                  </label>
+                  <label className="check-item">
+                    <input
+                      type="checkbox"
+                      checked={handoverAccessories.giayTo}
+                      onChange={(e) => setHandoverAccessories({ ...handoverAccessories, giayTo: e.target.checked })}
+                    />
+                    Giấy tờ xe (Bản sao công chứng hợp lệ)
+                  </label>
+                </div>
+              </div>
+
+              {/* Ghi chú thêm */}
+              <label className="return-field" style={{ marginTop: 14 }}>
+                <span>Ghi chú mô tả thêm các vết xước có sẵn (nếu có)</span>
+                <textarea
+                  rows={2}
+                  value={handoverNote}
+                  onChange={(e) => setHandoverNote(e.target.value)}
+                  placeholder="Ví dụ: Vết trầy nhẹ 2cm ở ốp pô phải; yếm trước xước dăm nhẹ..."
+                  className="fee-reason"
+                />
+              </label>
+            </div>
+
+            {/* 3. Tải ảnh chụp xe 4 phía (Bắt buộc) */}
+            <div className="return-section">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <p className="return-section-title" style={{ margin: 0 }}>📸 Ảnh chụp xe 4 phía trước khi giao <span className="required">* (Bắt buộc đủ 4 ảnh)</span></p>
+                <span style={{ fontSize: 11, color: "#64748b" }}>Tự động nén ảnh Base64</span>
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+                {[
+                  { side: "front", label: "Mặt trước xe" },
+                  { side: "back", label: "Mặt sau xe" },
+                  { side: "left", label: "Sườn trái xe" },
+                  { side: "right", label: "Sườn phải xe" },
+                ].map(({ side, label }) => {
+                  const imgUrl = handoverImages[side as keyof typeof handoverImages];
+                  return (
+                    <div key={side} style={{ border: "1px dashed #cbd5e1", borderRadius: 8, padding: 8, background: "#fafafa", textAlign: "center", position: "relative" }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#334155", marginBottom: 6 }}>{label}</div>
+                      {imgUrl ? (
+                        <div style={{ position: "relative" }}>
+                          <img
+                            src={imgUrl}
+                            alt={label}
+                            onClick={() => setPreviewImage({ url: imgUrl, title: `Ảnh ${label} lúc bàn giao` })}
+                            style={{ width: "100%", height: 110, objectFit: "cover", borderRadius: 6, cursor: "zoom-in", border: "1px solid #16a34a" }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setHandoverImages(prev => ({ ...prev, [side]: "" }))}
+                            style={{ position: "absolute", top: 4, right: 4, background: "rgba(0,0,0,0.6)", color: "#fff", border: 0, borderRadius: "50%", width: 22, height: 22, cursor: "pointer", fontSize: 12, display: "grid", placeItems: "center" }}
+                            title="Xóa ảnh"
+                          >
+                            ✕
+                          </button>
+                          <div style={{ fontSize: 10, color: "#16a34a", fontWeight: 700, marginTop: 4 }}>✓ Đã tải ảnh</div>
+                        </div>
+                      ) : (
+                        <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 110, cursor: "pointer", background: "#fff", borderRadius: 6, border: "1px dashed #94a3b8" }}>
+                          <span style={{ fontSize: 24, marginBottom: 4 }}>📷</span>
+                          <span style={{ fontSize: 11, color: "#f26522", fontWeight: 700 }}>Chọn ảnh</span>
+                          <span style={{ fontSize: 9, color: "#94a3b8" }}>(hoặc chụp)</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            style={{ display: "none" }}
+                            onChange={(e) => handleUploadHandoverImage(e, side as any)}
+                          />
+                        </label>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Thao tác */}
+            <div className="decision">
+              <button className="light" onClick={() => setHandoverModal(null)} disabled={handoverSaving}>
+                Hủy bỏ
+              </button>
+              <button className="primary" onClick={submitHandover} disabled={handoverSaving} style={{ background: "#f26522", minWidth: 180 }}>
+                {handoverSaving ? "Đang lưu biên bản..." : "✓ Hoàn tất bàn giao xe"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* ── Modal 2: Biên bản tiếp nhận & Đối soát trả xe (2 Cột Đối Chiếu) ── */}
+      {returnCheckModal && (
+        <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget && !returnSaving) setReturnCheckModal(null); }}>
+          <section className="modal" style={{ maxWidth: 1040, borderRadius: 12, maxHeight: "94vh" }}>
+            <div className="modal-head">
+              <div>
+                <p>BIÊN BẢN TIẾP NHẬN & ĐỐI SOÁT TRẢ XE</p>
+                <h2>{returnCheckModal.code} — {returnCheckModal.vehicleName}</h2>
+              </div>
+              <button onClick={() => !returnSaving && setReturnCheckModal(null)}>×</button>
+            </div>
+
+            {/* Tóm tắt thông tin */}
+            <div className="customer-info" style={{ background: "#f8fafc", padding: "12px 18px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+              <span>Mã phiếu: <b>{returnCheckModal.code}</b></span>
+              <span>Khách hàng: <b>{returnCheckModal.customerInfo?.fullName || returnCheckModal.customerName}</b></span>
+              <span>Điện thoại: <b>{returnCheckModal.customerInfo?.phone || returnCheckModal.customerPhone || "—"}</b></span>
+              <span>
+                Biển số xe:{" "}
+                <b style={{
+                  background: "#fff7ed",
+                  color: "#ea580c",
+                  border: "1px solid #fdba74",
+                  padding: "2px 8px",
+                  borderRadius: 6,
+                  letterSpacing: "0.5px",
+                  fontWeight: 800
+                }}>
+                  {returnCheckModal.handoverDetails?.plateNumber || returnCheckModal.plateNumber || returnCheckModal.licensePlate || "Chưa gắn biển"}
+                </b>
+              </span>
+              <span>Nhận thực tế: <b>{fmtDT(returnCheckModal.actualPickupAt || returnCheckModal.startDate)}</b></span>
+              <span>Hẹn trả: <b>{fmtDT(returnCheckModal.endDate)}</b></span>
+              {(() => {
+                const late = lateMinutes(returnCheckModal.endDate, new Date());
+                return late > 0 ? (
+                  <span style={{ color: "#b91c1c", fontWeight: 700 }}>⚠️ {lateText(late)}</span>
+                ) : (
+                  <span style={{ color: "#15803d", fontWeight: 700 }}>✓ Đúng giờ</span>
+                );
+              })()}
+            </div>
+
+            {/* GIAO DIỆN 2 CỘT ĐỐI CHIẾU TRỰC QUAN */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 16 }}>
+              {/* CỘT 1: TÌNH TRẠNG LÚC GIAO XE */}
+              <div style={{ background: "#f8fafc", border: "1.5px solid #cbd5e1", borderRadius: 10, padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1.5px solid #cbd5e1", paddingBottom: 8, marginBottom: 12 }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#1e293b", display: "flex", alignItems: "center", gap: 6 }}>
+                    📋 1. LÚC BÀN GIAO CHO KHÁCH
+                  </span>
+                  <span style={{ fontSize: 11, background: "#e2e8f0", padding: "2px 8px", borderRadius: 999, color: "#475569", fontWeight: 600 }}>
+                    Staff: {returnCheckModal.handoverDetails?.staffName || returnCheckModal.staffId || "Gốc"}
+                  </span>
+                </div>
+
+                <div style={{ display: "grid", gap: 10, fontSize: 13 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed #e2e8f0", paddingBottom: 6 }}>
+                    <span style={{ color: "#64748b" }}>Biển số bàn giao:</span>
+                    <b style={{ color: "#ea580c", letterSpacing: "0.5px" }}>
+                      {returnCheckModal.handoverDetails?.plateNumber || returnCheckModal.plateNumber || returnCheckModal.licensePlate || "Chưa gắn biển"}
+                    </b>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed #e2e8f0", paddingBottom: 6 }}>
+                    <span style={{ color: "#64748b" }}>Số Km lúc giao:</span>
+                    <b>{returnCheckModal.handoverDetails?.odometer ? `${returnCheckModal.handoverDetails.odometer.toLocaleString()} Km` : "Chưa ghi nhận"}</b>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed #e2e8f0", paddingBottom: 6 }}>
+                    <span style={{ color: "#64748b" }}>Thân vỏ xe:</span>
+                    <span>{returnCheckModal.handoverDetails?.checklist?.thanVo === "warning" ? "⚠️ Có xước nhẹ" : "✓ Tốt / Không xước"}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed #e2e8f0", paddingBottom: 6 }}>
+                    <span style={{ color: "#64748b" }}>Phanh / Đèn / Gương:</span>
+                    <span>
+                      {returnCheckModal.handoverDetails?.checklist?.phanh === "warning" ? "Phanh cần chú ý · " : "Phanh tốt · "}
+                      {returnCheckModal.handoverDetails?.checklist?.denXiNhan === "warning" ? "Đèn chập chờn · " : "Đèn tốt · "}
+                      {returnCheckModal.handoverDetails?.checklist?.guong === "warning" ? "Thiếu gương" : "Đủ 2 gương"}
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed #e2e8f0", paddingBottom: 6 }}>
+                    <span style={{ color: "#64748b" }}>Phụ kiện đã giao:</span>
+                    <span>
+                      {returnCheckModal.handoverDetails?.accessories?.muBaoHiem !== false ? "✓ 2 Mũ BH " : ""}
+                      {returnCheckModal.handoverDetails?.accessories?.aoMua !== false ? "✓ Áo mưa " : ""}
+                      {returnCheckModal.handoverDetails?.accessories?.giayTo !== false ? "✓ Giấy tờ xe" : ""}
+                    </span>
+                  </div>
+                  {returnCheckModal.handoverDetails?.note && (
+                    <div style={{ background: "#fff", padding: "8px 10px", borderRadius: 6, border: "1px solid #e2e8f0", fontSize: 12, color: "#334155" }}>
+                      <b>Ghi chú lúc giao:</b> {returnCheckModal.handoverDetails.note}
+                    </div>
+                  )}
+                </div>
+
+                {/* 4 ảnh chụp lúc giao */}
+                <div style={{ marginTop: 14 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#475569", display: "block", marginBottom: 6 }}>
+                    📸 4 ảnh xe lúc giao (Click để phóng to soi vết xước):
+                  </span>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                    {[
+                      { key: "front", label: "Trước" },
+                      { key: "back", label: "Sau" },
+                      { key: "left", label: "Sườn trái" },
+                      { key: "right", label: "Sườn phải" },
+                    ].map(({ key, label }) => {
+                      const img = returnCheckModal.handoverDetails?.images?.[key as keyof typeof returnCheckModal.handoverDetails.images];
+                      return (
+                        <div key={key} style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 6, padding: 4, textAlign: "center" }}>
+                          <span style={{ fontSize: 10, color: "#64748b", display: "block", marginBottom: 2 }}>{label}</span>
+                          {img ? (
+                            <img
+                              src={img}
+                              alt={label}
+                              onClick={() => setPreviewImage({ url: img, title: `Ảnh lúc giao — ${label}` })}
+                              style={{ width: "100%", height: 80, objectFit: "cover", borderRadius: 4, cursor: "zoom-in" }}
+                            />
+                          ) : (
+                            <div style={{ height: 80, display: "grid", placeItems: "center", fontSize: 10, color: "#94a3b8", background: "#f1f5f9" }}>
+                              Chưa có ảnh
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* CỘT 2: TÌNH TRẠNG TIẾP NHẬN TRẢ XE */}
+              <div style={{ background: "#fffaf5", border: "1.5px solid #f97316", borderRadius: 10, padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1.5px solid #fdba74", paddingBottom: 8, marginBottom: 12 }}>
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#c2410c", display: "flex", alignItems: "center", gap: 6 }}>
+                    🔍 2. TIẾP NHẬN LÚC TRẢ XE
+                  </span>
+                  <span style={{ fontSize: 11, background: "#ffedd5", padding: "2px 8px", borderRadius: 999, color: "#c2410c", fontWeight: 700 }}>
+                    Người kiểm tra: {staff.fullName}
+                  </span>
+                </div>
+
+                <div style={{ display: "grid", gap: 12 }}>
+                  {/* Nhập Km lúc trả */}
+                  <div>
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 4 }}>
+                      Số Km lúc trả (ODD / ODO) <span className="required">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="Ví dụ: 12650"
+                      value={returnOdo}
+                      onChange={(e) => setReturnOdo(e.target.value)}
+                      className="fee-input"
+                      style={{ height: 40 }}
+                    />
+                    {(() => {
+                      const cur = Number(returnOdo);
+                      const start = returnCheckModal.handoverDetails?.odometer || 0;
+                      if (!returnOdo) return null;
+                      if (start > 0 && cur < start) {
+                        return <small style={{ color: "#b91c1c", fontWeight: 700, display: "block", marginTop: 4 }}>⚠️ Km lúc trả không thể nhỏ hơn Km lúc giao ({start})</small>;
+                      }
+                      if (start > 0 && cur >= start) {
+                        return <small style={{ color: "#15803d", fontWeight: 700, display: "block", marginTop: 4 }}>🚀 Quãng đường đã đi: +{(cur - start).toLocaleString()} Km</small>;
+                      }
+                      return null;
+                    })()}
+                  </div>
+
+                  {/* Checklist kiểm tra lại */}
+                  <div>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#334155", display: "block", marginBottom: 6 }}>Kiểm tra tình trạng thân vỏ & bộ phận:</span>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      {[
+                        { key: "thanVo", label: "Thân vỏ xe", good: "Bình thường", bad: "Phát hiện xước mới" },
+                        { key: "phanh", label: "Phanh xe", good: "Hoạt động tốt", bad: "Kém an toàn" },
+                        { key: "denXiNhan", label: "Đèn & Xi nhan", good: "Sáng đủ", bad: "Hỏng bóng / nứt" },
+                        { key: "guong", label: "Gương chiếu hậu", good: "Đủ 02 gương", bad: "Vỡ / mất gương" },
+                      ].map((item) => (
+                        <div key={item.key} style={{ border: "1px solid #fed7aa", padding: "8px", borderRadius: 6, background: "#fff" }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, marginBottom: 4 }}>{item.label}</div>
+                          <div style={{ display: "flex", gap: 4 }}>
+                            <button
+                              type="button"
+                              onClick={() => setReturnChecklist({ ...returnChecklist, [item.key]: "good" })}
+                              style={{
+                                flex: 1, padding: "4px", fontSize: 10, fontWeight: 700, borderRadius: 4,
+                                border: returnChecklist[item.key as keyof typeof returnChecklist] === "good" ? "1.5px solid #16a34a" : "1px solid #e2e8f0",
+                                background: returnChecklist[item.key as keyof typeof returnChecklist] === "good" ? "#f0fdf4" : "#fff",
+                                color: returnChecklist[item.key as keyof typeof returnChecklist] === "good" ? "#15803d" : "#64748b",
+                                cursor: "pointer",
+                              }}
+                            >
+                              ✓ {item.good}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setReturnChecklist({ ...returnChecklist, [item.key]: "warning" })}
+                              style={{
+                                flex: 1, padding: "4px", fontSize: 10, fontWeight: 700, borderRadius: 4,
+                                border: returnChecklist[item.key as keyof typeof returnChecklist] === "warning" ? "1.5px solid #ef4444" : "1px solid #e2e8f0",
+                                background: returnChecklist[item.key as keyof typeof returnChecklist] === "warning" ? "#fef2f2" : "#fff",
+                                color: returnChecklist[item.key as keyof typeof returnChecklist] === "warning" ? "#dc2626" : "#64748b",
+                                cursor: "pointer",
+                              }}
+                            >
+                              ⚠️ {item.bad}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Phụ kiện thu hồi */}
+                  <div style={{ background: "#fff", padding: "8px 10px", borderRadius: 6, border: "1px solid #fed7aa" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#334155", display: "block", marginBottom: 6 }}>Phụ kiện thu hồi:</span>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={returnAccessories.muBaoHiem}
+                          onChange={(e) => setReturnAccessories({ ...returnAccessories, muBaoHiem: e.target.checked })}
+                        />
+                        Đủ 2 Mũ BH
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={returnAccessories.aoMua}
+                          onChange={(e) => setReturnAccessories({ ...returnAccessories, aoMua: e.target.checked })}
+                        />
+                        Đủ Áo mưa
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={returnAccessories.giayTo}
+                          onChange={(e) => setReturnAccessories({ ...returnAccessories, giayTo: e.target.checked })}
+                        />
+                        Đủ Giấy tờ xe
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* 4 ảnh lúc nhận lại xe */}
+                  <div>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#334155", display: "block", marginBottom: 6 }}>
+                      📸 4 ảnh chụp lúc nhận lại (Đối chiếu trực tiếp với ảnh cột 1):
+                    </span>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
+                      {[
+                        { side: "front", label: "Trước" },
+                        { side: "back", label: "Sau" },
+                        { side: "left", label: "Sườn trái" },
+                        { side: "right", label: "Sườn phải" },
+                      ].map(({ side, label }) => {
+                        const imgUrl = returnImages[side as keyof typeof returnImages];
+                        return (
+                          <div key={side} style={{ border: "1px dashed #fdba74", borderRadius: 6, padding: 4, background: "#fff", textAlign: "center", position: "relative" }}>
+                            <span style={{ fontSize: 10, color: "#64748b", display: "block", marginBottom: 2 }}>{label}</span>
+                            {imgUrl ? (
+                              <div style={{ position: "relative" }}>
+                                <img
+                                  src={imgUrl}
+                                  alt={label}
+                                  onClick={() => setPreviewImage({ url: imgUrl, title: `Ảnh lúc trả — ${label}` })}
+                                  style={{ width: "100%", height: 80, objectFit: "cover", borderRadius: 4, cursor: "zoom-in" }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setReturnImages(prev => ({ ...prev, [side]: "" }))}
+                                  style={{ position: "absolute", top: 2, right: 2, background: "rgba(0,0,0,0.6)", color: "#fff", border: 0, borderRadius: "50%", width: 20, height: 20, cursor: "pointer", fontSize: 11, display: "grid", placeItems: "center" }}
+                                  title="Xóa ảnh"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ) : (
+                              <label style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 80, cursor: "pointer", background: "#fffaf5", borderRadius: 4, border: "1px dashed #f97316" }}>
+                                <span style={{ fontSize: 18 }}>📷</span>
+                                <span style={{ fontSize: 10, color: "#ea580c", fontWeight: 700 }}>Chụp / Tải</span>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  style={{ display: "none" }}
+                                  onChange={(e) => handleUploadReturnImage(e, side as any)}
+                                />
+                              </label>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Phụ phí phát sinh & Quyết toán */}
+            <div className="settlement-box" style={{ marginTop: 18 }}>
+              <p className="return-section-title">💰 Chi phí phát sinh & Quyết toán</p>
+              <div style={{ display: "grid", gridTemplateColumns: "1.2fr 2fr", gap: 14 }}>
+                <label className="return-field">
+                  <span>Số tiền phụ phí phát sinh (VNĐ)</span>
+                  <input
+                    type="number"
+                    min={0}
+                    step={10000}
+                    value={additionalFee}
+                    onChange={(e) => setAdditionalFee(Number(e.target.value) || 0)}
+                    className="fee-input"
+                    placeholder="0"
+                  />
+                  <small className="field-hint">Phạt trễ giờ, hư hỏng linh kiện, trầy xước, mất mũ BH...</small>
+                </label>
+                <label className="return-field">
+                  <span>Lý do phụ phí {additionalFee > 0 && <span className="required">*</span>}</span>
+                  <textarea
+                    rows={2}
+                    value={feeReason}
+                    onChange={(e) => setFeeReason(e.target.value)}
+                    placeholder="Ví dụ: Trầy xước bửng phải xe (150.000đ); Trả xe muộn 1.5 giờ (50.000đ)..."
+                    className="fee-reason"
+                  />
+                </label>
+              </div>
+
+              {/* Dòng tổng kết tiền */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.2fr", gap: 12, marginTop: 14, paddingTop: 12, borderTop: "1px solid #e2e8f0" }}>
+                <div>
+                  <small style={{ color: "#64748b", display: "block" }}>Tiền thuê gốc</small>
+                  <b style={{ fontSize: 15, color: "#1e293b" }}>{money(returnCheckModal.totalAmount)}</b>
+                </div>
+                <div>
+                  <small style={{ color: "#64748b", display: "block" }}>Phụ phí phát sinh</small>
+                  <b style={{ fontSize: 15, color: additionalFee > 0 ? "#ea580c" : "#64748b" }}>+ {money(additionalFee)}</b>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <small style={{ color: "#64748b", display: "block" }}>Tổng thanh toán</small>
+                  <b style={{ fontSize: 18, color: "#f26522" }}>{money(returnCheckModal.totalAmount + additionalFee)}</b>
+                </div>
+              </div>
+            </div>
+
+            {/* Thao tác */}
+            <div className="decision">
+              <button className="light" onClick={() => setReturnCheckModal(null)} disabled={returnSaving}>
+                Hủy bỏ
+              </button>
+              <button className="primary" onClick={submitReturnCheck} disabled={returnSaving} style={{ background: "#2563eb", minWidth: 220 }}>
+                {returnSaving ? "Đang lưu quyết toán..." : "✓ Xác nhận nhận xe & Xem hóa đơn"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* ── Lightbox Preview Modal (Phóng to ảnh) ── */}
+      {previewImage && (
+        <div className="modal-backdrop" onClick={() => setPreviewImage(null)} style={{ zIndex: 9999 }}>
+          <div style={{ background: "#fff", padding: 16, borderRadius: 12, maxWidth: "90vw", maxHeight: "90vh", display: "flex", flexDirection: "column", gap: 10 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <b style={{ fontSize: 14, color: "#1e293b" }}>{previewImage.title}</b>
+              <button onClick={() => setPreviewImage(null)} style={{ border: 0, background: "#f1f5f9", borderRadius: "50%", width: 28, height: 28, cursor: "pointer", fontWeight: 700 }}>✕</button>
+            </div>
+            <img src={previewImage.url} alt={previewImage.title} style={{ maxWidth: "85vw", maxHeight: "75vh", objectFit: "contain", borderRadius: 8 }} />
+          </div>
         </div>
       )}
 

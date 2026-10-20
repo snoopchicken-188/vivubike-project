@@ -11,68 +11,93 @@ import { createUserWithEmailAndPassword, onAuthStateChanged, sendPasswordResetEm
 import { collection, doc, getDoc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
 
 import { auth, db } from "../lib/firebase";
-
-
+import {
+  DEFAULT_HOME_CONTENT,
+  normalizeHomeContent,
+  HomeContentData,
+} from "@/lib/home-content";
 
 type Bike = { id: string; name: string; type: string; price: number; image: string; description: string; specs: string; perks: string[]; status?: string; isVisible?: boolean };
 
-
-
 type Rate = [string, number, number, number, number];
-
-const slides = [
-
-  { image: "https://images.unsplash.com/photo-1558981806-ec527fa84c39?auto=format&fit=crop&w=2200&q=90", eyebrow: "THUÊ XE MÁY TẠI HÀ NỘI", title: "Chọn xe tốt", accent: "Đi thật xa", text: "Xe mới, giao nhận rõ ràng và thủ tục đơn giản cho hành trình của bạn." },
-
-  { image: "https://images.unsplash.com/photo-1750900142272-b2c6f4867c79?auto=format&fit=crop&w=2200&q=90", eyebrow: "KHÁM PHÁ PHỐ PHƯỜNG", title: "Đi chậm lại", accent: "Cảm nhận nhiều hơn", text: "Chủ động lịch trình và khám phá Hà Nội theo cách của riêng bạn." },
-
-  { image: "https://cdn.prod.website-files.com/65ecc09cac93eb01ba966de4/6927547dcc39a0b47b022b26_Backroads%20Vietnam%20mit%20Erik%20Peters%20HEADER.jpg", eyebrow: "SẴN SÀNG LÊN ĐƯỜNG", title: "Vững tay lái", accent: "An tâm hành trình", text: "Xe được bảo dưỡng định kỳ và đội ngũ luôn sẵn sàng hỗ trợ bạn." },
-
-];
-
-
 
 const money = (value: number) => `${new Intl.NumberFormat("vi-VN").format(value)}đ`;
 
-
-
 export default function HomePage() {
-
   const router = useRouter();
-
   const [slide, setSlide] = useState(0);
-
   const [paused, setPaused] = useState(false);
-
   const [filter, setFilter] = useState("Tất cả xe");
-
   const [menuOpen, setMenuOpen] = useState(false);
-
   const [authMode, setAuthMode] = useState<"login" | "register" | "forgot" | null>(null);
-
   const [guestModalBikeId, setGuestModalBikeId] = useState<string | null>(null);
-
   const [notice, setNotice] = useState("");
-
+  const [lockedError, setLockedError] = useState("");
   const [account, setAccount] = useState<{ fullName: string; role: string } | null>(null);
-
   const [bikes, setBikes] = useState<Bike[]>([]);
-
   const [searchBikeType, setSearchBikeType] = useState("all");
-
   const [rates, setRates] = useState<Rate[]>([]);
 
+  // Dữ liệu nội dung trang chủ đồng bộ Firestore
+  const [homeContent, setHomeContent] = useState<HomeContentData>(DEFAULT_HOME_CONTENT);
 
+  // Đảm bảo slider luôn nhận vào một mảng gồm nhiều slide (>= 3 slide), tự động bù nếu Firestore bị ghi đè chỉ còn 1 slide
+  const slides = (homeContent.slides && homeContent.slides.length >= 3)
+    ? homeContent.slides
+    : (homeContent.slides && homeContent.slides.length > 0)
+    ? [...homeContent.slides, ...DEFAULT_HOME_CONTENT.slides.slice(homeContent.slides.length)]
+    : DEFAULT_HOME_CONTENT.slides;
+
+  const about = homeContent.about;
+  const policies = homeContent.policies;
+  const contact = homeContent.contact;
+
+  // Lắng nghe real-time site_settings/home_content từ Firestore
+  useEffect(() => {
+    const unsub = onSnapshot(
+      doc(db, "site_settings", "home_content"),
+      (snapshot) => {
+        if (snapshot.exists()) {
+          setHomeContent(normalizeHomeContent(snapshot.data()));
+        }
+      },
+      (error) => {
+        console.warn("Lỗi khi lắng nghe home_content:", error);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  // Tự động chuyển slide (Autoplay) sau mỗi 4.5 giây
+  useEffect(() => {
+    if (paused || slides.length === 0) return;
+    const id = window.setInterval(() => setSlide((current) => (current + 1) % slides.length), 4500);
+    return () => window.clearInterval(id);
+  }, [paused, slides.length]);
+
+
+
+  // ── Kiểm tra redirect từ trang bị khóa ──
 
   useEffect(() => {
 
-    if (paused) return;
+    if (typeof window === "undefined") return;
 
-    const id = window.setInterval(() => setSlide((current) => (current + 1) % slides.length), 5500);
+    const params = new URLSearchParams(window.location.search);
 
-    return () => window.clearInterval(id);
+    if (params.get("locked") === "1") {
 
-  }, [paused]);
+      setAuthMode("login");
+
+      setLockedError("Tài khoản của bạn đã bị khóa. Vui lòng liên hệ hotline 0900 123 456 để xử lý.");
+
+      // Xóa param khỏi URL không cần reload
+
+      window.history.replaceState({}, "", window.location.pathname);
+
+    }
+
+  }, []);
 
 
 
@@ -204,7 +229,7 @@ export default function HomePage() {
 
     const password = String(form.get("password") || "");
 
-
+    setLockedError("");
 
     try {
 
@@ -212,11 +237,16 @@ export default function HomePage() {
 
       const profile = await getDoc(doc(db, "users", credential.user.uid));
 
-      const role = profile.exists()
-        ? String(profile.data().role || "customer").toLowerCase()
-        : "customer";
+      const data = profile.exists() ? profile.data() : {};
 
+      // ── Kiểm tra trạng thái bị khóa ──
+      if (data.isBlocked || data.status === "locked") {
+        await signOut(auth);
+        setLockedError("Tài khoản của bạn đã bị khóa. Vui lòng liên hệ hotline 0900 123 456 để xử lý.");
+        return;
+      }
 
+      const role = String(data.role || "customer").toLowerCase();
 
       setAuthMode(null);
 
@@ -367,7 +397,7 @@ export default function HomePage() {
 
   const visibleBikes = bikes.filter((bike) => filter === "Tất cả xe" || bike.type === filter);
 
-  const activeSlide = slides[slide];
+  const activeSlide = slides[slide % slides.length] || slides[0] || DEFAULT_HOME_CONTENT.slides[0];
   const dashboardPath = (role: string) => {
     if (role === "admin") return "/admin";
     if (role === "staff") return "/staff";
@@ -405,21 +435,58 @@ export default function HomePage() {
 
       <section className="hero" id="trang-chu">
 
-        <div className="hero-media" key={slide} style={{ backgroundImage: `url(${activeSlide.image})` }} />
+        <div className="hero-media" key={slide} style={{ backgroundImage: `url(${activeSlide.imageUrl || activeSlide.image || DEFAULT_HOME_CONTENT.slides[0].imageUrl})` }} />
 
         <div className="hero-overlay" />
 
-        <div className="hero-content" key={`content-${slide}`}><p className="eyebrow">{activeSlide.eyebrow}</p><h1>{activeSlide.title}<br /><em>{activeSlide.accent}</em></h1><p style={{ color: "#f0f0f0" }}>{activeSlide.text}</p><div className="hero-tags"><span>✓ Xe bảo dưỡng định kỳ</span><span>✓ Hỗ trợ 24/7</span></div></div>
+        <div className="hero-content" key={`content-${slide}`}><p className="eyebrow">{activeSlide.subtitle || activeSlide.eyebrow}</p><h1>{activeSlide.heading1 || activeSlide.title}<br /><em>{activeSlide.heading2 || activeSlide.accent}</em></h1><p style={{ color: "#f0f0f0" }}>{activeSlide.description || activeSlide.text}</p><div className="hero-tags">{(activeSlide.tags && activeSlide.tags.length > 0 ? activeSlide.tags : ["Xe bảo dưỡng định kỳ", "Hỗ trợ 24/7"]).map((tag, idx) => <span key={idx}>✓ {tag}</span>)}</div></div>
 
         <form className="search-card" onSubmit={handleSearch}><h2><span>⌖</span> Tìm xe trống</h2><label>Loại xe<select value={searchBikeType} onChange={(e) => setSearchBikeType(e.target.value)}><option value="all">Tất cả loại xe</option><option value="manual">Xe số</option><option value="scooter">Xe tay ga</option><option value="clutch">Xe côn tay</option></select></label><div className="search-grid"><label>Ngày nhận<input type="date" required defaultValue="2026-09-12" /></label><label>Ngày trả<input type="date" required defaultValue="2026-09-14" /></label></div><button className="primary-button">Tìm xe ngay <span>→</span></button></form>
 
-        <div className="hero-controls"><button onClick={() => setSlide((slide + slides.length - 1) % slides.length)} aria-label="Ảnh trước">←</button><div>{slides.map((_, index) => <button key={index} onClick={() => setSlide(index)} className={index === slide ? "dot active" : "dot"} aria-label={`Ảnh ${index + 1}`} />)}</div><button onClick={() => setPaused(!paused)} aria-label="Tạm dừng ảnh">{paused ? "▶" : "Ⅱ"}</button><button onClick={() => setSlide((slide + 1) % slides.length)} aria-label="Ảnh tiếp">→</button></div>
+        <div className="hero-controls">
+          <button
+            type="button"
+            onClick={() => setSlide((current) => (current + slides.length - 1) % slides.length)}
+            aria-label="Ảnh trước"
+            title="Slide trước"
+          >
+            ←
+          </button>
+          <div className="hero-dots">
+            {slides.map((_, index) => (
+              <button
+                key={index}
+                type="button"
+                onClick={() => setSlide(index)}
+                className={index === (slide % slides.length) ? "dot active" : "dot"}
+                aria-label={`Chuyển đến Slide ${index + 1}`}
+                title={`Slide ${index + 1}`}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={() => setPaused(!paused)}
+            aria-label="Tự động chuyển slide"
+            title={paused ? "Tiếp tục tự động chuyển" : "Tạm dừng"}
+          >
+            {paused ? "▶" : "⏸"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setSlide((current) => (current + 1) % slides.length)}
+            aria-label="Ảnh tiếp"
+            title="Slide tiếp theo"
+          >
+            →
+          </button>
+        </div>
 
       </section>
 
 
 
-      <section className="section intro" id="gioi-thieu"><div><p className="eyebrow orange">GIỚI THIỆU</p><h2>Thuê xe chủ động cho mọi chuyến đi</h2></div><div><p>Vi Vu Bike mang đến dịch vụ thuê xe máy rõ ràng, giá công khai và xe được chăm sóc kỹ trước mỗi hành trình. Bạn chỉ cần chọn lịch phù hợp, hoàn tất xác minh và nhận xe.</p><a href="/policies">Xem chính sách hỗ trợ →</a></div></section>
+      <section className="section intro" id="gioi-thieu"><div><p className="eyebrow orange">GIỚI THIỆU</p><h2>{about.title}</h2></div><div><p>{about.introText}</p><a href="/policies">Xem chính sách hỗ trợ →</a></div></section>
 
 
 
@@ -427,7 +494,7 @@ export default function HomePage() {
 
 
 
-      <section className="support" id="chinh-sach"><div className="section support-grid"><div><p className="eyebrow orange">CHÍNH SÁCH HỖ TRỢ</p><h2 style={{ color: "#ffffff" }}>Rõ ràng trước khi bạn bắt đầu chuyến đi</h2><p>Hỗ trợ 24/7 qua hotline, tư vấn lịch trình miễn phí và đổi xe khi gặp lỗi kỹ thuật trong phạm vi hỗ trợ.</p><button className="outline" onClick={() => router.push("/policies")}>Đọc chính sách đầy đủ →</button></div><div className="policy-grid"><article><b>01</b><h3>Thủ tục nhanh</h3><p>Đăng ký, gửi giấy tờ và chờ xác minh hồ sơ.</p></article><article><b>02</b><h3>Phụ kiện đi kèm</h3><p>02 mũ bảo hiểm và 01 áo mưa trong mỗi lượt thuê.</p></article><article><b>03</b><h3>Hỗ trợ sự cố</h3><p>Liên hệ hotline nếu xe có dấu hiệu bất thường.</p></article><article><b>04</b><h3>Giao nhận minh bạch</h3><p>Biên bản có tình trạng xe, phụ kiện và thời gian nhận trả.</p></article></div></div></section>
+      <section className="support" id="chinh-sach"><div className="section support-grid"><div><p className="eyebrow orange">CHÍNH SÁCH HỖ TRỢ</p><h2 style={{ color: "#ffffff" }}>{policies.heading}</h2><p>{policies.subheading}</p><button className="outline" onClick={() => router.push("/policies")}>Đọc chính sách đầy đủ →</button></div><div className="policy-grid">{policies.items.map((item, index) => <article key={item.id || index}><b>0{index + 1}</b><h3>{item.title}</h3><p>{item.description}</p></article>)}</div></div></section>
 
 
 
@@ -443,7 +510,7 @@ export default function HomePage() {
 
 
 
-      <footer className="site-footer" id="lien-he"><div><a className="brand" href="#trang-chu"><span className="brand-mark">V</span><span>VI VU <b>BIKE</b></span></a><p>Thuê xe máy rõ ràng, tiện lợi cho mọi chuyến đi.</p></div><button className="primary-button" onClick={() => document.getElementById("trang-chu")?.scrollIntoView({ behavior: "smooth" })}>Tìm xe ngay ↑</button><small>© 2026 Vi Vu Bike · Hotline: 0900 123 456 · Hà Nội, Việt Nam</small></footer>
+      <footer className="site-footer" id="lien-he"><div><a className="brand" href="#trang-chu"><span className="brand-mark">V</span><span>VI VU <b>BIKE</b></span></a><p>Thuê xe máy rõ ràng, tiện lợi cho mọi chuyến đi.</p><div style={{ marginTop: 14, fontSize: 13.5, color: "#aaa", lineHeight: 1.8 }}><div>📍 <b>Địa chỉ:</b> {contact.address}</div><div>📞 <b>Hotline:</b> <a href={`tel:${contact.hotline.replace(/\s+/g, "")}`} style={{ color: "#ff8d55", textDecoration: "none", fontWeight: 700 }}>{contact.hotline}</a></div><div>✉️ <b>Email:</b> <a href={`mailto:${contact.email}`} style={{ color: "#d1d5db", textDecoration: "none" }}>{contact.email}</a></div>{contact.workingHours && <div>⏰ <b>Giờ làm việc:</b> {contact.workingHours}</div>}{(contact.socialLinks?.facebook || contact.socialLinks?.zalo) && (<div style={{ display: "flex", gap: 14, marginTop: 8 }}>{contact.socialLinks?.facebook && <a href={contact.socialLinks.facebook} target="_blank" rel="noreferrer" style={{ color: "#ff8d55", textDecoration: "none", fontSize: 13, fontWeight: 700 }}>Facebook ↗</a>}{contact.socialLinks?.zalo && <a href={contact.socialLinks.zalo} target="_blank" rel="noreferrer" style={{ color: "#38bdf8", textDecoration: "none", fontSize: 13, fontWeight: 700 }}>Zalo ↗</a>}</div>)}</div></div><button className="primary-button" onClick={() => document.getElementById("trang-chu")?.scrollIntoView({ behavior: "smooth" })}>Tìm xe ngay ↑</button><small>© 2026 Vi Vu Bike · Hotline: {contact.hotline} · {contact.address}</small></footer>
 
 
 
@@ -539,7 +606,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {authMode === "login" && <div className="auth-overlay"><form className="auth-modal" onSubmit={handleLogin}><button type="button" className="close" onClick={() => setAuthMode(null)}>✕</button><p className="eyebrow orange">ĐĂNG NHẬP</p><h2>Chào mừng bạn trở lại</h2><label>Email<input name="email" type="email" required placeholder="email@example.com" /></label><label>Mật khẩu<input name="password" type="password" required placeholder="Mật khẩu" /></label><button className="primary-button">Đăng nhập →</button><div className="auth-actions"><button type="button" onClick={() => setAuthMode("register")}>Chưa có tài khoản? Đăng ký</button><button type="button" onClick={() => setAuthMode("forgot")}>Quên mật khẩu?</button></div></form></div>}
+      {authMode === "login" && <div className="auth-overlay"><form className="auth-modal" onSubmit={handleLogin}><button type="button" className="close" onClick={() => { setAuthMode(null); setLockedError(""); }}>✕</button><p className="eyebrow orange">ĐĂNG NHẬP</p><h2>Chào mừng bạn trở lại</h2>{lockedError && (<div style={{ background: "#fef2f2", border: "1.5px solid #fca5a5", borderRadius: 10, padding: "14px 16px", marginBottom: 4, display: "flex", gap: 10, alignItems: "flex-start" }}><span style={{ fontSize: 18, lineHeight: 1 }}>🔒</span><p style={{ margin: 0, fontSize: 13.5, color: "#991b1b", lineHeight: 1.6 }}>Tài khoản của bạn đã bị khóa. Vui lòng liên hệ hotline <b style={{ whiteSpace: "nowrap" }}>{contact.hotline || "0900 123 456"}</b> để xử lý.</p></div>)}<label>Email<input name="email" type="email" required placeholder="email@example.com" /></label><label>Mật khẩu<input name="password" type="password" required placeholder="Mật khẩu" /></label><button className="primary-button">Đăng nhập →</button><div className="auth-actions"><button type="button" onClick={() => setAuthMode("register")}>Chưa có tài khoản? Đăng ký</button><button type="button" onClick={() => setAuthMode("forgot")}>Quên mật khẩu?</button></div></form></div>}
 
 
 
@@ -698,9 +765,80 @@ export default function HomePage() {
 
         /* Khôi phục form tìm xe dạng thẻ dọc như bố cục ban đầu */
 
-        .hero{height:670px}.hero-content{top:126px;max-width:590px}.search-card{top:104px;right:clamp(22px,8vw,125px);bottom:auto;left:auto;transform:none;width:365px;min-height:0;padding:28px;display:block;border-radius:18px}.search-card h2{display:block;margin:0 0 22px;padding:0;border:0;font-size:22px}.search-card h2 span{display:inline;background:transparent;width:auto;height:auto;border-radius:0}.search-card>label,.search-card .search-grid label{display:grid;align-content:normal;gap:7px;margin:0 0 15px;padding:0;border:0;font-size:12px;letter-spacing:0}.search-card>label::before,.search-card .search-grid label::before{display:none}.search-card>label{padding-top:0}.search-card select,.search-card input{border:0;border-bottom:1px solid #d8d8d8;padding:11px 0;color:#171717;font-size:14px;font-weight:500}.search-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.search-card .primary-button{display:block;width:100%;min-height:0;margin:10px 0 0;padding:15px 18px;border-radius:10px}.hero-controls{bottom:29px}
+        .hero{height:670px}.hero-content{top:126px;max-width:590px}.search-card{top:104px;right:clamp(22px,8vw,125px);bottom:auto;left:auto;transform:none;width:365px;min-height:0;padding:28px;display:block;border-radius:18px}.search-card h2{display:block;margin:0 0 22px;padding:0;border:0;font-size:22px}.search-card h2 span{display:inline;background:transparent;width:auto;height:auto;border-radius:0}.search-card>label,.search-card .search-grid label{display:grid;align-content:normal;gap:7px;margin:0 0 15px;padding:0;border:0;font-size:12px;letter-spacing:0}.search-card>label::before,.search-card .search-grid label::before{display:none}.search-card>label{padding-top:0}.search-card select,.search-card input{border:0;border-bottom:1px solid #d8d8d8;padding:11px 0;color:#171717;font-size:14px;font-weight:500}.search-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.search-card .primary-button{display:block;width:100%;min-height:0;margin:10px 0 0;padding:15px 18px;border-radius:10px}
 
-        @media(max-width:800px){.hero{height:750px}.search-card{top:auto;right:22px;bottom:70px;left:22px;transform:none;width:auto;padding:25px;display:block}.search-card h2{grid-column:auto;padding:0}.search-card>label{padding:0}.search-card .search-grid label{padding:0}.search-card .primary-button{width:100%;margin-top:10px}.hero-controls{bottom:23px}}
+        /* Hero Controls & Carousel Pagination */
+        .hero-controls {
+          position: absolute;
+          bottom: 30px;
+          left: clamp(22px, 9vw, 145px);
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          z-index: 10;
+        }
+        .hero-controls > button {
+          border: 1px solid rgba(255, 255, 255, 0.45) !important;
+          background: rgba(15, 23, 42, 0.5) !important;
+          backdrop-filter: blur(8px);
+          color: #fff !important;
+          border-radius: 50% !important;
+          width: 38px !important;
+          height: 38px !important;
+          font-size: 15px !important;
+          display: inline-flex !important;
+          align-items: center !important;
+          justify-content: center !important;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          padding: 0 !important;
+        }
+        .hero-controls > button:hover {
+          background: #f26522 !important;
+          border-color: #f26522 !important;
+          transform: scale(1.08);
+        }
+        .hero-dots {
+          display: flex !important;
+          align-items: center !important;
+          gap: 8px !important;
+          background: rgba(15, 23, 42, 0.5);
+          backdrop-filter: blur(8px);
+          padding: 8px 14px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.25);
+        }
+        .hero-dots .dot {
+          width: 8px !important;
+          height: 8px !important;
+          border-radius: 50% !important;
+          background: rgba(255, 255, 255, 0.55) !important;
+          opacity: 0.7 !important;
+          border: 0 !important;
+          padding: 0 !important;
+          cursor: pointer;
+          transition: all 0.25s ease;
+        }
+        .hero-dots .dot:hover {
+          background: #fff !important;
+          opacity: 1 !important;
+          transform: scale(1.2);
+        }
+        .hero-dots .dot.active {
+          width: 24px !important;
+          border-radius: 999px !important;
+          background: #f26522 !important;
+          opacity: 1 !important;
+        }
+
+        @media(max-width:800px){
+          .hero{height:750px}.search-card{top:auto;right:22px;bottom:70px;left:22px;transform:none;width:auto;padding:25px;display:block}.search-card h2{grid-column:auto;padding:0}.search-card>label{padding:0}.search-card .search-grid label{padding:0}.search-card .primary-button{width:100%;margin-top:10px}
+          .hero-controls{bottom:18px;left:22px;gap:8px}
+          .hero-controls > button{width:32px !important;height:32px !important;font-size:13px !important}
+          .hero-dots{padding:6px 10px;gap:6px}
+          .hero-dots .dot{width:7px !important;height:7px !important}
+          .hero-dots .dot.active{width:18px !important}
+        }
 
       `}</style>
 

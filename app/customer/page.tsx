@@ -2,6 +2,7 @@
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "firebase/auth";
+import { useRouter } from "next/navigation";
 import {
   addDoc,
   collection,
@@ -109,6 +110,7 @@ const verificationLabel = (status: string) =>
           : "Chưa xác minh";
 
 export default function CustomerPage() {
+  const router = useRouter();
   const [view, setView] = useState<View>("overview");
   const [notice, setNotice] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
@@ -135,7 +137,10 @@ export default function CustomerPage() {
 
   useEffect(() => {
     return onAuthStateChanged(auth, async (user) => {
-      if (!user) return;
+      if (!user) {
+        router.replace("/");
+        return;
+      }
       setUid(user.uid);
       try {
         const profile = await getDoc(doc(db, "users", user.uid));
@@ -152,6 +157,15 @@ export default function CustomerPage() {
             createdAt: serverTimestamp(),
           });
         }
+
+        // ── Kiểm tra bị khóa ──
+        const profileData = profile.exists() ? profile.data() : {};
+        if (profileData.isBlocked || profileData.status === "locked") {
+          await signOut(auth);
+          router.replace("/?locked=1");
+          return;
+        }
+
         const currentProfile = profile.exists()
           ? profile.data()
           : {
