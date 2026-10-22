@@ -6,6 +6,7 @@ import { collection, doc, getDoc, onSnapshot, updateDoc, serverTimestamp } from 
 import { useRouter } from "next/navigation";
 import { auth, db } from "../../lib/firebase";
 import { fileToBase64 } from "@/lib/home-content";
+import { StaffReviews } from "@/components/rental-reviews";
 
 /* ─── Types ─────────────────────────────────────────────────────────── */
 type VerifStatus = "pending" | "needs_update" | "staff_approved" | "rejected" | "approved" | "not_submitted";
@@ -89,13 +90,14 @@ type Rental = {
   returnDetails?: ReturnDetails;
 };
 
-type View = "overview" | "verification" | "rentals" | "profile";
+type View = "overview" | "verification" | "rentals" | "reviews" | "profile";
 
 /* ─── Menu ───────────────────────────────────────────────────────────── */
 const menu: { id: View; icon: string; label: string; group?: string }[] = [
   { id: "overview",      icon: "▦", label: "Tổng quan" },
   { id: "verification",  icon: "✓", label: "Hồ sơ cần xác minh", group: "XỬ LÝ HỒ SƠ" },
   { id: "rentals",       icon: "≡", label: "Phiếu thuê",          group: "VẬN HÀNH" },
+  { id: "reviews",       icon: "★", label: "Đánh giá" },
   { id: "profile",       icon: "◉", label: "Hồ sơ cá nhân",      group: "TÀI KHOẢN" },
 ];
 
@@ -1155,6 +1157,8 @@ export default function StaffPage() {
         )}
 
         {/* ── Profile ── */}
+        {view === "reviews" && <StaffReviews />}
+
         {view === "profile" && (
           <div className="page">
             <div className="view-head"><div><h2>Hồ sơ cá nhân</h2><p>Cập nhật thông tin tài khoản của bạn.</p></div></div>

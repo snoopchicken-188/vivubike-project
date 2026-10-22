@@ -48,6 +48,9 @@ type PriceRow = {
 };
 type Booking = {
   id: string;
+  vehicleId?: string;
+  vehicleName?: string;
+  licensePlate?: string;
   status: string;
   totalAmount: number;
   customerType: "guest" | "member";
@@ -93,6 +96,9 @@ const vehicleStatusLabel: Record<string, string> = {
   inactive: "Ngừng hoạt động",
 };
 const bookingStatusLabel: Record<string, string> = {
+  ready_for_pickup: "Chờ bàn giao",
+  in_progress: "Đang thuê",
+  returning: "Tiếp nhận trả xe",
   pending: "Chờ xác nhận",
   confirmed: "Đã xác nhận",
   reserved: "Đang đặt",
@@ -125,6 +131,85 @@ const mergePriceRows = (current: PriceRow[], loaded: PriceRow[]): PriceRow[] => 
   ].sort((a, b) => a.name.localeCompare(b.name, "vi"));
 };
 
+// Fleet summary reads current bookings, independently of the revenue date filter.
+const fleetStatusKey = (value: string) => value.trim().toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d")
+  .replace(/[\s-]+/g, "_");
+const fleetBookingStage = (status: string): "reserved" | "rented" | "closed" | null => {
+  const key = fleetStatusKey(status);
+  if (["pending", "pending_approval", "pending_confirmation", "waiting_confirmation", "confirmed", "ready_for_pickup", "reserved", "cho_xac_nhan", "cho_duyet", "cho_duyet_don", "da_xac_nhan", "dang_dat", "da_dat", "cho_ban_giao"].includes(key)) return "reserved";
+  if (["in_progress", "renting", "rented", "delivered", "returning", "dang_thue", "dang_cho_thue", "da_giao", "da_giao_xe", "tiep_nhan_tra_xe"].includes(key)) return "rented";
+  if (["completed", "returned", "done", "cancelled", "canceled", "cancel", "rejected", "da_hoan_thanh", "hoan_thanh", "da_tra_xe", "da_huy", "tu_choi", "da_tu_choi"].includes(key)) return "closed";
+  return null;
+};
+const calculateFleetCondition = (vehicles: Vehicle[], bookings: Booking[]) => {
+  const result = { total: 0, available: 0, reserved: 0, rented: 0, unmatchedBookings: 0, overbooked: 0, issues: [] as string[] };
+  const vehicleIds = new Set(vehicles.map(vehicle => vehicle.id));
+  const normalizeName = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ");
+  const normalizePlate = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const uniqueMatch = (candidates: Vehicle[]) => candidates.length === 1 ? candidates[0].id : "";
+  const byVehicle = new Map<string, { reserved: number; rented: number }>();
+  for (const booking of bookings) {
+    const stage = fleetBookingStage(booking.status);
+    if (!stage) {
+      result.issues.push(`Đơn ${booking.id}: chưa nhận diện được trạng thái “${booking.status}”.`);
+      continue;
+    }
+    // Prefer the stored document ID. Legacy/stale IDs may be resolved only
+    // when a plate or model name identifies exactly one catalogue entry.
+    let vehicleId = (booking.vehicleId || "").trim();
+    if (!vehicleIds.has(vehicleId)) {
+      vehicleId = "";
+      const plate = normalizePlate(booking.licensePlate || "");
+      const plateMatches = plate ? vehicles.filter(vehicle => normalizePlate(vehicle.licensePlate) === plate) : [];
+      if (plateMatches.length === 1) vehicleId = plateMatches[0].id;
+      // An ambiguous physical plate must never be resolved by a model name.
+      if (!vehicleId && plateMatches.length === 0 && booking.vehicleName?.trim()) {
+        vehicleId = uniqueMatch(vehicles.filter(vehicle =>
+          normalizeName(vehicle.name) === normalizeName(booking.vehicleName!)));
+      }
+    }
+    if (!vehicleIds.has(vehicleId)) {
+      if (stage !== "closed") {
+        result.unmatchedBookings += 1;
+        result.issues.push(`Đơn ${booking.id} (${booking.vehicleName || "chưa có tên xe"}): không xác định được xe tương ứng trong danh mục.`);
+      }
+      continue;
+    }
+    const counts = byVehicle.get(vehicleId) || { reserved: 0, rented: 0 };
+    // The current project creates one vehicle per booking for both guests
+    // and members. Closed/rejected orders do not occupy a vehicle.
+    if (stage !== "closed") counts[stage] += 1;
+    byVehicle.set(vehicleId, counts);
+  }
+  for (const vehicle of vehicles) {
+    const status = fleetStatusKey(vehicle.status);
+    // Hiding a catalogue entry must not hide its active rental commitments.
+    const activeCounts = byVehicle.get(vehicle.id);
+    const hasActiveBookings = !!activeCounts && activeCounts.reserved + activeCounts.rented > 0;
+    if (["maintenance", "inactive", "dang_bao_duong", "ngung_hoat_dong"].includes(status) && !hasActiveBookings) continue;
+    const quantity = Number.isFinite(vehicle.quantity) ? Math.max(0, Math.floor(vehicle.quantity)) : 0;
+    result.total += quantity;
+    const bookingCounts = byVehicle.get(vehicle.id);
+    let rented = 0, reserved = 0;
+    if (bookingCounts) {
+      // A booking's lifecycle is authoritative even when vehicles.status was
+      // not reset after return. Prioritize physically rented stock if overbooked.
+      rented = Math.min(quantity, bookingCounts.rented);
+      reserved = Math.min(quantity - rented, bookingCounts.reserved);
+      result.overbooked += Math.max(0, bookingCounts.rented + bookingCounts.reserved - quantity);
+    } else if (fleetBookingStage(status) === "rented") {
+      rented = quantity;
+    } else if (fleetBookingStage(status) === "reserved") {
+      reserved = quantity;
+    }
+    result.rented += rented;
+    result.reserved += reserved;
+    result.available += quantity - rented - reserved;
+  }
+  return result;
+};
+
 const priceInputStyle = {
   width: "100%",
   minWidth: 94,
@@ -147,6 +232,7 @@ export default function BusinessManagerPage() {
   const [notice, setNotice] = useState("");
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [fleetSources, setFleetSources] = useState({ vehicles: false, bookings: false, vehiclesError: false, bookingsError: false });
   const [priceRows, setPriceRows] = useState<PriceRow[]>([]);
   const [vehicleForm, setVehicleForm] = useState<VehicleForm | null>(null);
   const [search, setSearch] = useState("");
@@ -183,6 +269,7 @@ export default function BusinessManagerPage() {
     return onSnapshot(
       collection(db, "vehicles"),
       (snapshot) => {
+        setFleetSources(current => ({ ...current, vehicles: true, vehiclesError: false }));
         setVehicles(
           snapshot.docs
             .map((item): Vehicle => {
@@ -207,7 +294,10 @@ export default function BusinessManagerPage() {
             .sort((a, b) => a.name.localeCompare(b.name, "vi")),
         );
       },
-      () => notify("Không thể tải danh sách xe. Hãy kiểm tra Firestore Rules."),
+      () => {
+        setFleetSources(current => ({ ...current, vehiclesError: true }));
+        notify("Không thể tải danh sách xe. Hãy kiểm tra Firestore Rules.");
+      },
     );
   }, [ready]);
   useEffect(() => {
@@ -215,12 +305,16 @@ export default function BusinessManagerPage() {
     return onSnapshot(
       collection(db, "bookings"),
       (snapshot) => {
+        setFleetSources(current => ({ ...current, bookings: true, bookingsError: false }));
         setBookings(
           snapshot.docs.map((item): Booking => {
             const data = item.data();
             return {
               id: item.id,
               status: str(data.status, "pending"),
+              vehicleId: str(data.vehicleId),
+              vehicleName: str(data.vehicleName),
+              licensePlate: str(data.plateNumber) || str(data.licensePlate) || str(data.handoverDetails?.plateNumber),
               totalAmount: num(data.totalAmount || data.totalPrice || data.amount),
               customerType: data.customerType === "guest" || !data.customerId ? "guest" : "member",
               createdAt: data.createdAt,
@@ -229,7 +323,10 @@ export default function BusinessManagerPage() {
           }),
         );
       },
-      () => notify("Không thể tải dữ liệu đơn thuê."),
+      () => {
+        setFleetSources(current => ({ ...current, bookingsError: true }));
+        notify("Không thể tải dữ liệu đơn thuê.");
+      },
     );
   }, [ready]);
   useEffect(() => {
@@ -288,6 +385,8 @@ export default function BusinessManagerPage() {
     });
     return result;
   }, [vehicles]);
+  const fleetCondition = useMemo(() => calculateFleetCondition(vehicles, bookings), [vehicles, bookings]);
+  const fleetConditionReady = fleetSources.vehicles && fleetSources.bookings && !fleetSources.vehiclesError && !fleetSources.bookingsError;
   const stats = useMemo(() => {
     const inRange = (value: Date | null) =>
       Boolean(value && value >= range.start && value <= range.end);
@@ -719,26 +818,37 @@ export default function BusinessManagerPage() {
                 <div className="bm-title">
                   <div>
                     <h2>Tình trạng đội xe</h2>
-                    <small>Tính theo số lượng từng xe trong danh mục.</small>
+                    <small>Xe đang hoạt động, cập nhật theo dữ liệu xe và đơn thuê.</small>
                   </div>
-                  <b>{fleet.total} xe</b>
+                  <b>{fleetConditionReady ? `${fleetCondition.total} xe` : "—"}</b>
                 </div>
-                <div className="bm-legend">
-                  {(["available", "reserved", "delivered", "maintenance", "inactive"] as const).map(
-                    (status) => (
+                <div className="bm-legend" aria-live="polite">
+                  {(fleetSources.vehiclesError || fleetSources.bookingsError) ? (
+                    <p role="alert">Không tải được tình trạng đội xe. Hãy kiểm tra kết nối và quyền truy cập dữ liệu.</p>
+                  ) : !fleetConditionReady ? (
+                    <p>Đang tải tình trạng đội xe từ database...</p>
+                  ) : <>
+                    {([
+                      ["available", "Xe trống"],
+                      ["reserved", "Xe đã được đặt"],
+                      ["rented", "Xe đang cho thuê"],
+                    ] as const).map(([status, label]) => (
                       <p key={status}>
-                        <i className={status === "maintenance" || status === "inactive" ? "member" : ""} />
-                        {vehicleStatusLabel[status]}
-                        <b>{fleet[status]} xe</b>
+                        <i />
+                        {label}
+                        <b>{fleetCondition[status]} xe</b>
                         <small>
-                          {fleet.total
-                            ? Math.round((fleet[status] * 100) / fleet.total)
-                            : 0}
-                          % đội xe
+                          {fleetCondition.total ? Math.round((fleetCondition[status] * 100) / fleetCondition.total) : 0}% đội xe
                         </small>
                       </p>
-                    ),
-                  )}
+                    ))}
+                    {fleetCondition.unmatchedBookings > 0 && <small role="status">Có {fleetCondition.unmatchedBookings} đơn đang mở chưa liên kết được với xe trong danh mục; cần kiểm tra lại thông tin xe của đơn.</small>}
+                    {fleetCondition.issues.length > 0 && <details style={{ gridColumn: "1 / -1" }}>
+                      <summary>Xem đơn cần kiểm tra liên kết ({fleetCondition.issues.length})</summary>
+                      <ul>{fleetCondition.issues.map((issue, index) => <li key={index}>{issue}</li>)}</ul>
+                    </details>}
+                    {fleetCondition.overbooked > 0 && <small role="status">Số đơn đang mở vượt số lượng xe trong danh mục; cần kiểm tra lại đơn đặt trùng hoặc số lượng xe.</small>}
+                  </>}
                 </div>
               </article>
               <article>

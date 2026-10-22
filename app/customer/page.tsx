@@ -16,6 +16,7 @@ import {
   where,
 } from "firebase/firestore";
 import { auth, db } from "../../lib/firebase";
+import { CustomerReviews } from "../../components/rental-reviews";
 
 type View = "overview" | "rent" | "bookings" | "verify" | "reviews" | "profile";
 type BookingStatus =
@@ -640,7 +641,7 @@ export default function CustomerPage() {
             onPreview={previewDocument}
           />
         )}
-        {view === "reviews" && <Reviews />}
+        {view === "reviews" && <CustomerReviews bookings={bookings} />}
         {view === "profile" && (
           <Profile
             onSubmit={saveProfile}
@@ -2877,26 +2878,6 @@ function Verification({
           </div>
         </aside>
       </div>
-    </div>
-  );
-}
-
-function Reviews() {
-  return (
-    <div className="page">
-      <div className="section-title">
-        <div>
-          <h2>Đánh giá của tôi</h2>
-          <p>Bạn có thể đánh giá sau khi hoàn thành một đơn thuê.</p>
-        </div>
-      </div>
-      <section className="review-card">
-        <h3>Chưa có đơn thuê đủ điều kiện đánh giá</h3>
-        <p>
-          Khi Staff hoàn tất đơn thuê, đơn đó sẽ xuất hiện tại đây để bạn gửi
-          phản hồi.
-        </p>
-      </section>
     </div>
   );
 }
