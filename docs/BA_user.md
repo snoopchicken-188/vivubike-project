@@ -31,5 +31,6 @@
 6. Hệ thống lưu yêu cầu thuê xe, cập nhật trực tiếp vào mục "Quản lý phiếu thuê / Lịch sử thuê" của khách hàng với trạng thái "Chờ xác nhận".
 7. Staff tiếp nhận yêu cầu trên hệ thống và bấm "Chấp nhận".
 8. Hệ thống tự động chuyển trạng thái phiếu thuê thành "Đã xác nhận" (hoặc "Thành công") trên giao diện của khách hàng. Khách hàng tự theo dõi được mà không cần Staff phải gọi điện.
+9. Sau khi thuê xe xong có thể đánh giá đơn thuê đó
 
 **Kết quả:** Phiếu thuê được tạo và khách hàng có thể chủ động theo dõi vòng đời của phiếu thuê ngay trên web.
