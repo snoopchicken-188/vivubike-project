@@ -55,3 +55,5 @@
 1. Staff bấm vào ảnh đại diện hoặc menu "Hồ sơ cá nhân".
 2. Hệ thống hiển thị các thông tin: Họ tên, Mã nhân viên, Số điện thoại, Email, Chức vụ/Ca làm việc.
 3. (Tùy chọn) Staff có thể đổi mật khẩu đăng nhập tại màn hình này.
+
+#### Use Case 6: Xem đánh giá và trả lời đánh giá
