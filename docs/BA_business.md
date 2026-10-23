@@ -36,14 +36,3 @@
 4. Quản lý bấm "Cập nhật".
 5. Hệ thống lưu cấu hình. Giao diện trang chủ của khách hàng (cả khách vãng lai và thành viên) lập tức hiển thị mức giá mới cập nhật.
 
-#### Use Case 4: Quản lý Voucher (Mã khuyến mãi)
-**Mô tả:** Tạo và quản lý các mã giảm giá áp dụng cho khách thuê xe.
-
-**Luồng sự kiện chính:**
-1. Quản lý truy cập vào mục "Quản lý Voucher".
-2. Hệ thống hiển thị danh sách các Voucher đang có (Tên mã, Mức giảm, Hạn sử dụng, Trạng thái).
-3. Thao tác của Quản lý:
-   * **Thêm Voucher:** Bấm "Tạo mới", nhập các thông tin: Mã code (VD: SUMMER2026), Loại giảm (Theo % hoặc Số tiền cố định), Giá trị giảm, Số lượng mã, Ngày bắt đầu và Ngày hết hạn.
-   * **Sửa Voucher:** Chọn mã chưa hết hạn để thay đổi số lượng hoặc kéo dài thời gian áp dụng.
-   * **Xóa/Hủy Voucher:** Chọn mã và bấm "Vô hiệu hóa" để khách hàng không thể nhập mã đó được nữa.
-4. Hệ thống lưu lại thay đổi. Các mã hợp lệ sẽ được áp dụng khi khách hàng nhập ở bước thanh toán/tạo phiếu thuê.
